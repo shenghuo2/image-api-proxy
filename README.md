@@ -1,4 +1,4 @@
-# Plana NovelAI Proxy
+# NovelAI API Proxy
 
 一个独立部署的 NovelAI HTTP 转发服务。它只接受 Plana App 当前使用的固定接口，保持请求体、图片 ZIP、Vibe 向量和生成帧原样传输。服务不解析、存储或记录 Token、提示词、图片内容。
 
@@ -27,7 +27,7 @@ openssl rand -hex 32
 把结果作为 `PROXY_SHARED_KEY` 配置到运行环境。该密钥与 NovelAI Token 是两种凭证，不要提交到 Git 或打包进 APK。默认只监听 `127.0.0.1:8787`：
 
 ```bash
-PROXY_SHARED_KEY='<生成的随机密钥>' go run ./cmd/plana-novelai-proxy
+PROXY_SHARED_KEY='<生成的随机密钥>' go run ./cmd/novelai-api-proxy
 ```
 
 本机验证：

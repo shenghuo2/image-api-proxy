@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shenghuo2/plana-novelai-proxy/internal/proxy"
+	"github.com/shenghuo2/novelai-api-proxy/internal/proxy"
 )
 
 func main() {
