@@ -9,8 +9,13 @@ services:
       - no-new-privileges:true
     environment:
       PROXY_LISTEN_ADDR: 0.0.0.0:8787
-      PROXY_SHARED_KEY: ${PROXY_SHARED_KEY:?set a random proxy key in .env}
-      PROXY_MAX_CONCURRENT: ${PROXY_MAX_CONCURRENT:-8}
+      PROXY_ADMIN_KEY: ${PROXY_ADMIN_KEY:?set a random admin key in .env}
+      PROXY_NAI_TOKEN: ${PROXY_NAI_TOKEN:?set your NovelAI token in .env}
+      PROXY_QUEUE_SIZE: ${PROXY_QUEUE_SIZE:-64}
+      PROXY_QUOTA_TTL: ${PROXY_QUOTA_TTL:-5m}
+      PROXY_STATE_PATH: /data/keys.json
+    volumes:
+      - proxy-data:/data
     ports:
       - 127.0.0.1:${PROXY_HOST_PORT:-8787}:8787
     healthcheck:
@@ -18,3 +23,5 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+volumes:
+  proxy-data:

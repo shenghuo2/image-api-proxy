@@ -1,3 +1,4 @@
 .env
 *.log
 /novelai-api-proxy
+/data/
