@@ -1,0 +1,20 @@
+services:
+  proxy:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PROXY_LISTEN_ADDR: 0.0.0.0:8787
+      PROXY_SHARED_KEY: ${PROXY_SHARED_KEY:?set a random proxy key in .env}
+      PROXY_MAX_CONCURRENT: ${PROXY_MAX_CONCURRENT:-8}
+    ports:
+      - 127.0.0.1:${PROXY_HOST_PORT:-8787}:8787
+    healthcheck:
+      test: ["CMD", "/plana-novelai-proxy", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
