@@ -1,0 +1,175 @@
+package proxy
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+type clientKey struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Hash             string `json:"hash"`
+	PolicyVersion    int    `json:"policy_version"`
+	AllowFixed       bool   `json:"allow_fixed_anlas"`
+	FixedLimit       int64  `json:"fixed_anlas_limit"`
+	FixedSpent       int64  `json:"fixed_anlas_spent"`
+	FixedPending     int64  `json:"fixed_anlas_pending"`
+	AllowPurchased   bool   `json:"allow_purchased_anlas"`
+	PurchasedLimit   int64  `json:"purchased_anlas_limit"`
+	PurchasedSpent   int64  `json:"purchased_anlas_spent"`
+	PurchasedPending int64  `json:"purchased_anlas_pending"`
+	AllowOpus        bool   `json:"allow_opus"`
+	OpusLimit        int64  `json:"opus_limit_images"`
+	OpusUsed         int64  `json:"opus_used_images"`
+	OpusPending      int64  `json:"opus_pending_images"`
+	Revoked          bool   `json:"revoked"`
+	Allocated        int64  `json:"allocated,omitempty"`
+	Spent            int64  `json:"spent,omitempty"`
+	Pending          int64  `json:"pending,omitempty"`
+}
+
+type keyStore struct {
+	mu   sync.Mutex
+	path string
+	keys []clientKey
+}
+
+func openKeyStore(path string) (*keyStore, error) {
+	if path == "" {
+		return nil, errors.New("state path is required")
+	}
+	s := &keyStore{path: path, keys: []clientKey{}}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &s.keys); err != nil {
+		return nil, fmt.Errorf("decode key state: %w", err)
+	}
+	for i := range s.keys {
+		if s.keys[i].PolicyVersion == 0 {
+			s.keys[i].PolicyVersion = 1
+			s.keys[i].AllowFixed = true
+			s.keys[i].FixedLimit = s.keys[i].Allocated
+			s.keys[i].FixedSpent = s.keys[i].Spent
+			s.keys[i].FixedPending = s.keys[i].Pending
+			s.keys[i].Allocated, s.keys[i].Spent, s.keys[i].Pending = 0, 0, 0
+		}
+	}
+	return s, nil
+}
+
+func (s *keyStore) update(fn func([]clientKey) ([]clientKey, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := append([]clientKey(nil), s.keys...)
+	next, err := fn(next)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".keys-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if err := tmp.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), s.path); err != nil {
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(s.path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	s.keys = next
+	return nil
+}
+
+func (s *keyStore) snapshot() []clientKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]clientKey(nil), s.keys...)
+}
+
+func (s *keyStore) find(raw string) (clientKey, bool) {
+	hash := sha256.Sum256([]byte(raw))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range s.keys {
+		stored, err := hex.DecodeString(key.Hash)
+		if err == nil && len(stored) == len(hash) && subtle.ConstantTimeCompare(stored, hash[:]) == 1 && !key.Revoked {
+			return key, true
+		}
+	}
+	return clientKey{}, false
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func remaining(k clientKey) int64 {
+	return fixedRemaining(k) + purchasedRemaining(k)
+}
+
+func fixedRemaining(k clientKey) int64 {
+	if k.Revoked || !k.AllowFixed || k.FixedLimit <= k.FixedSpent {
+		return 0
+	}
+	return k.FixedLimit - k.FixedSpent
+}
+
+func purchasedRemaining(k clientKey) int64 {
+	if k.Revoked || !k.AllowPurchased || k.PurchasedLimit <= k.PurchasedSpent {
+		return 0
+	}
+	return k.PurchasedLimit - k.PurchasedSpent
+}
+
+func opusRemaining(k clientKey) int64 {
+	if k.Revoked || !k.AllowOpus || k.OpusLimit <= k.OpusUsed {
+		return 0
+	}
+	return k.OpusLimit - k.OpusUsed
+}
+
+func totalRemaining(keys []clientKey) (fixed, purchased int64) {
+	for _, key := range keys {
+		fixed += fixedRemaining(key)
+		purchased += purchasedRemaining(key)
+	}
+	return fixed, purchased
+}

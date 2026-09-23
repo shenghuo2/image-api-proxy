@@ -24,25 +24,31 @@ func main() {
 		return
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	key := os.Getenv("PROXY_SHARED_KEY")
-	if len(key) < 32 {
-		logger.Error("PROXY_SHARED_KEY must contain at least 32 characters")
-		os.Exit(1)
-	}
-
-	maxConcurrent := 8
-	if raw := os.Getenv("PROXY_MAX_CONCURRENT"); raw != "" {
+	queueSize := 64
+	if raw := os.Getenv("PROXY_QUEUE_SIZE"); raw != "" {
 		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 1000 {
-			logger.Error("PROXY_MAX_CONCURRENT must be between 1 and 1000")
+		if err != nil || value < 1 || value > 10000 {
+			logger.Error("PROXY_QUEUE_SIZE must be between 1 and 10000")
 			os.Exit(1)
 		}
-		maxConcurrent = value
+		queueSize = value
 	}
-
-	handler, err := proxy.New(proxy.Config{
-		SharedKey:     key,
-		MaxConcurrent: maxConcurrent,
+	quotaTTL := 5 * time.Minute
+	if raw := os.Getenv("PROXY_QUOTA_TTL"); raw != "" {
+		value, err := time.ParseDuration(raw)
+		if err != nil || value < time.Minute || value > time.Hour {
+			logger.Error("PROXY_QUOTA_TTL must be between 1m and 1h")
+			os.Exit(1)
+		}
+		quotaTTL = value
+	}
+	statePath := os.Getenv("PROXY_STATE_PATH")
+	if statePath == "" {
+		statePath = "./data/keys.json"
+	}
+	handler, err := proxy.NewManaged(proxy.ManagedConfig{
+		AdminKey: os.Getenv("PROXY_ADMIN_KEY"), NovelAIToken: os.Getenv("PROXY_NAI_TOKEN"),
+		StatePath: statePath, QueueSize: queueSize, QuotaTTL: quotaTTL,
 	})
 	if err != nil {
 		logger.Error("invalid proxy configuration", "error", err)
