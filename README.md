@@ -22,12 +22,12 @@ docker run -d --name novelai-api-proxy --restart unless-stopped \
   -e PROXY_STATE_PATH=/data/keys.json \
   -v novelai-proxy-data:/data \
   -p 127.0.0.1:8787:8787 \
-  shenghuo2/novelai-api-proxy:v0.1.0
+  shenghuo2/novelai-api-proxy:v0.1.1
 ```
 
-镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.0`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP；公网访问应通过 HTTPS 反向代理。
+镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.1`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP；公网访问应通过 HTTPS 反向代理。升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
 
-构建完成后，管理面板位于 `http://127.0.0.1:8787/`，API 使用同一地址。Compose 默认仅映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 key 哈希、加密的客户端密钥与账号 Token、额度账本。需要局域网访问时，在 `.env` 中设置 `PROXY_BIND_ADDR` 为主机的局域网 IP，即可从其他设备访问同一个端口。
+构建完成后，管理面板位于 `http://127.0.0.1:8787/`，API 使用同一地址。Compose 默认仅映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 key 哈希、加密的客户端密钥与账号 Token、额度账本，以及持久化任务的请求体和结果。需要局域网访问时，在 `.env` 中设置 `PROXY_BIND_ADDR` 为主机的局域网 IP，即可从其他设备访问同一个端口。
 
 本机运行需要 Go 1.22+；先构建前端（Node.js 20.19+ 或 22.12+），再启动 Go 服务：
 
@@ -45,7 +45,9 @@ PROXY_ADMIN_KEY='<管理员密钥>' PROXY_NAI_TOKEN='<NovelAI Token>' \
 
 本机也可跳过前端构建，仅启动 API。Go 服务会自动挂载工作目录下的 `frontend/dist/`；从其他目录启动时，设置 `PROXY_FRONTEND_DIR` 为构建产物目录。显式指定的目录必须含有 `index.html`，否则启动失败。
 
-默认监听 `127.0.0.1:8787`，账本位于 `./data/keys.json`，账号保存在同目录的 `keys.json.accounts.json`。可通过 `PROXY_LISTEN_ADDR`、`PROXY_STATE_PATH`、`PROXY_QUEUE_SIZE` 和 `PROXY_QUOTA_TTL` 调整；每个账号的官方额度默认每 5 分钟最多自动刷新一次。只部署**一个实例**，因为队列和账本没有跨实例协调。服务账号也应专供本代理使用，避免外部消费干扰费用结算。公网访问应使用 HTTPS，并关闭反向代理的响应缓冲和敏感请求日志。
+默认监听 `127.0.0.1:8787`，账本位于 `./data/keys.json`，账号保存在同目录的 `keys.json.accounts.json`，持久化任务保存在 `keys.json.jobs/`。可通过 `PROXY_LISTEN_ADDR`、`PROXY_STATE_PATH`、`PROXY_QUEUE_SIZE` 和 `PROXY_QUOTA_TTL` 调整；每个账号的官方额度默认每 5 分钟最多自动刷新一次。只部署**一个实例**，因为队列和账本没有跨实例协调；更新容器时应先停止旧实例，再启动新实例。服务账号也应专供本代理使用，避免外部消费干扰费用结算。公网访问应使用 HTTPS，并关闭反向代理的响应缓冲和敏感请求日志。
+
+频繁更新且有用户在排队时，接入方应使用 [API.md](API.md) 的持久化任务接口，并为每次请求提供 `Idempotency-Key`。普通官方同步接口仍兼容，但连接断开后的请求无法重新接收结果。收到停止信号后，服务停止接纳新任务，让正在执行的任务最多继续 7 分钟；等待中的持久化任务由新进程恢复。Compose 预留 8 分钟停止宽限。请求体和结果在卷中以权限 0600 的文件保存，完成 24 小时后在服务重启或下次提交时清理；请按实际请求大小规划卷空间和备份策略。
 
 ## 管理面板
 

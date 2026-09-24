@@ -40,6 +40,20 @@ curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' 
 
 响应图片、ZIP、Vibe 向量和流式帧不重新编码。上游状态码与响应体直接返回给客户端；代理自身的鉴权、队列、参数和配额错误由代理返回。
 
+## 持久化任务接口
+
+需要在服务更新后保留排队任务的客户端，可把受支持的图片 POST 路由加上 `/jobs` 前缀，发送相同的官方请求体和客户端 Bearer key。例如 `POST /jobs/ai/generate-image`、`POST /jobs/ai/generate-image-stream` 或 `POST /jobs/image/ai/upscale`。提交时建议提供稳定且每次生成唯一的 `Idempotency-Key`（最多 128 字符）；同一 key 用相同标识和请求体重新提交会得到同一任务 ID，请求体或路由不同则返回 409。未提供时服务会随机生成任务 ID，提交响应丢失后无法可靠地找到该任务。
+
+```bash
+curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-generation-001' \
+  --data-binary @request.json "$BASE/jobs/ai/generate-image"
+```
+
+提交返回 `202`、`Location: /jobs/<id>` 和 JSON 状态。`GET /jobs/<id>` 返回 `waiting`、`running`、`done`、`interrupted` 或 `canceled`，并在 `done` 时提供 `result_url` 和 `upstream_status`。`GET /jobs/<id>/result` 返回保存的上游响应状态、Content-Type 和原始响应体；尚未完成时返回 409。流式生成任务的结果会在完成后一次性领取，不能实时观看进度。只能用提交任务所属的客户端 key 查询。`DELETE /jobs/<id>` 可取消等待任务，或删除已结束任务及结果；正在执行的任务不能安全取消，返回 409。
+
+任务请求体先持久化，再进入与同步请求共用的单并发 FIFO 队列；额度仍在轮到执行时检查和预留。重启后等待中的任务按原顺序恢复。已开始但因进程退出而中断的任务会标记 `interrupted`，不会自动重试；上游是否生成、扣费可能无法确认，需要检查账号账目和待核对额度。结果及状态在完成 24 小时后于下一次启动或提交时清理。持久化任务在 `/data` 中保存明文提示词、上传图片和生成结果，文件权限为 0600，目录为 0700；请保护数据卷。普通同步路由不保存请求体，连接中断后仍无法恢复或领取结果。
+
 ## 管理员接口
 
 下例中 `ADMIN_KEY` 是管理员密钥：
@@ -64,7 +78,7 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `GET /admin/accounts/{id}/quota` | 查询单账号缓存额度及有限固定分配额 |
 | `POST /admin/accounts/{id}/quota/refresh` | 请求刷新单账号额度；受最短 30 秒刷新间隔限制 |
 | `GET /admin/keys` | 列出每把 key 的权限、额度与状态；可解密的新 key 含 `key` 字段 |
-| `GET /admin/queue` | 读取当前执行请求、等待池顺序、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
+| `GET /admin/queue` | 读取当前执行请求、等待池顺序、持久化任务 ID、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
 | `GET /admin/settings` | 查看全局功能配置，默认 `allow_multi_image: false` |
 | `PUT /admin/settings` | 提交 `{"allow_multi_image":true}`，允许为 key 分配多图权限；关闭后立即阻断所有多图请求 |
 | `POST /admin/keys` | 设置名称、账号策略与权限，签发 key；未指定的权限默认关闭，账号默认轮询池 |
@@ -96,9 +110,9 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 
 ## 排队与结算
 
-所有触达上游的调用按入队顺序逐个执行。等待中的客户端断开后会立即移出等待池；生成流在整个响应结束后才释放队列。`PROXY_QUEUE_SIZE` 默认容纳 64 个等待请求，达到全局或逐 key 上限时返回 429 和 `Retry-After: 2`，响应体分别为 `queue full` 或 `key queue full`。排队时不预扣额度，轮到请求时再检查权限与剩余额度；前面的请求耗尽额度后，后续请求可能被拒绝。请求体上限 64 MiB；轮到请求时，服务在内存中暂存完整请求体并读取 JSON 请求描述用于费用预留，不写磁盘。
+所有触达上游的调用按入队顺序逐个执行。等待中的普通同步客户端断开后会立即移出等待池；持久化任务提交后不依赖客户端连接。生成流在整个响应结束后才释放队列。`PROXY_QUEUE_SIZE` 默认容纳 64 个等待请求，达到全局或逐 key 上限时返回 429 和 `Retry-After: 2`，响应体分别为 `queue full` 或 `key queue full`。排队时不预扣额度，轮到请求时再检查权限与剩余额度；前面的请求耗尽额度后，后续请求可能被拒绝。请求体上限 64 MiB；普通同步请求轮到执行时在内存中暂存完整请求体，持久化任务入队前先将请求体写入磁盘。
 
-`GET /admin/queue` 返回 `capacity`、`active` 和按位置排序的 `waiting`。每项只包含 key ID、备注名称、请求路由与排队/开始时间，不包含 Token、提示词或图片。管理面板的“任务队列”页会在可见时每 5 秒读取一次这个本地快照；该请求不进入生成队列，也不会刷新官方额度。队列在服务进程重启后清空。
+`GET /admin/queue` 返回 `capacity`、`active` 和按位置排序的 `waiting`。每项只包含 key ID、备注名称、持久化任务 ID（若有）、请求路由与排队/开始时间，不包含 Token、提示词或图片。管理面板的“任务队列”页会在可见时每 5 秒读取一次这个本地快照；该请求不进入生成队列，也不会刷新官方额度。普通同步等待请求在服务进程重启后消失，持久化任务从磁盘恢复。
 
 每个账号的官方订阅独立缓存 5 分钟，可用 `PROXY_QUOTA_TTL` 设为 1 分钟至 1 小时。缓存期内各请求只使用对应账号的本地预计余额；单账号刷新失败后 30 秒内不会反复请求官方，池模式会继续尝试其他可用账号。管理员可查看 `snapshot_age_seconds`，或调用刷新接口；因此 `GET /admin/quota` 和 `GET /user/subscription` 不保证实时反映官方变化。
 
@@ -106,4 +120,4 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 
 导演增强按客户端采用的 28 步像素公式保守预留点数，背景移除按三倍基础费用加 5 计算。导演工具即使在官方 Opus 条件下可能免费，代理仍按点数预算保守记账；需要精确核账时请参考官方账户记录。
 
-服务不记录明文 Token、key、提示词、图片或请求体；账号 Token 与可查看的客户端 key 以密文保存，进程在转发时仍能看到明文。
+服务不记录明文 Token 或 key；账号 Token 与可查看的客户端 key 以密文保存。普通同步请求不落盘提示词、图片或请求体；持久化任务为实现重启恢复，按上文所述将请求和结果写入数据卷。
