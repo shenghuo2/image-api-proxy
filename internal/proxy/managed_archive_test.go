@@ -364,8 +364,13 @@ func TestArchiveIPTrustAndMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := h.store.find(raw); !ok || got.FixedSpent != 7 || !h.settings.snapshot().AllowMultiImage || len(h.accounts.snapshot()) != 1 {
+	settings := h.settings.snapshot()
+	if got, ok := h.store.find(raw); !ok || got.FixedSpent != 7 || !settings.AllowMultiImage || settings.ArchiveDays != 30 || settings.ArchiveMaxBytes != 20<<30 || len(h.accounts.snapshot()) != 1 {
 		t.Fatal("legacy state lost")
+	}
+	var schemaVersion int
+	if err := h.db.db.QueryRow("PRAGMA user_version").Scan(&schemaVersion); err != nil || schemaVersion != stateSchemaVersion {
+		t.Fatalf("legacy import schema version=%d err=%v", schemaVersion, err)
 	}
 	if _, ok := h.jobs.get(jobID); !ok {
 		t.Fatal("legacy job lost")
@@ -415,18 +420,37 @@ func TestArchiveIPTrustAndMigration(t *testing.T) {
 
 func TestArchiveRestartRecoveryAndRetention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "keys.json")
-	first, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: path})
+	keys := &keyStore{path: path, keys: []clientKey{}}
+	accounts := &accountStore{path: path + ".accounts.json", accounts: []upstreamAccount{}}
+	settingsStore := &settingsStore{path: path + ".settings.json", data: defaultProxySettings()}
+	jobs := &jobStore{dir: path + ".jobs", jobs: make(map[string]durableJob)}
+	initial, err := openStateDB(path, keys, accounts, settingsStore, jobs, newKeyVault(testAdminKey))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archiveDir := path + ".archive"
+	if err := os.MkdirAll(archiveDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	red := archiveTestPNG(color.RGBA{R: 255, A: 255})
 	id := strings.Repeat("b", 32)
 	work := archiveWork{ID: id, GroupID: id, KeyID: "key", KeyName: "at-submit", IP: "192.0.2.1", Route: "/ai/generate-image", Completed: time.Now()}
-	if err := os.WriteFile(first.archive.path(id, ".capture"), red, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(archiveDir, id+".capture"), red, 0600); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := json.Marshal(work)
-	if _, err := first.db.db.Exec("INSERT INTO archive_work(id,data,created_at) VALUES(?,?,?)", id, data, time.Now().Unix()); err != nil {
+	stagedDB, err := sql.Open("sqlite", path+".sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stagedDB.Exec("INSERT INTO archive_work(id,data,created_at) VALUES(?,?,?)", id, data, time.Now().Unix()); err != nil {
+		_ = stagedDB.Close()
+		t.Fatal(err)
+	}
+	if err := stagedDB.Close(); err != nil {
 		t.Fatal(err)
 	}
 	restarted, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: path})
@@ -464,14 +488,17 @@ func TestArchiveMigrationRejectsMissingJobResult(t *testing.T) {
 	if _, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: path}); err == nil {
 		t.Fatal("migration accepted missing result")
 	}
-	var marker string
 	db, err := sql.Open("sqlite", path+".sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := db.QueryRow("SELECT value FROM meta WHERE name='migrated'").Scan(&marker); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("migration marker after failure: %q, %v", marker, err)
+	var tables, version int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('meta','keys','settings')").Scan(&tables); err != nil || tables != 0 {
+		t.Fatalf("partial schema after failed migration: tables=%d, err=%v", tables, err)
+	}
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 0 {
+		t.Fatalf("schema version after failed migration: version=%d, err=%v", version, err)
 	}
 }
 

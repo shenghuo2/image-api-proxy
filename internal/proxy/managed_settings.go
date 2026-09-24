@@ -15,6 +15,21 @@ type proxySettings struct {
 	ArchiveMaxBytes int64 `json:"archive_max_bytes"`
 }
 
+func defaultProxySettings() proxySettings {
+	return proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30}
+}
+
+func decodeProxySettings(data []byte) (proxySettings, error) {
+	value := defaultProxySettings()
+	if err := json.Unmarshal(data, &value); err != nil {
+		return proxySettings{}, err
+	}
+	if value.ArchiveDays < -1 || value.ArchiveDays > 36500 || value.ArchiveMaxBytes < 1<<20 || value.ArchiveMaxBytes > 1<<40 {
+		return proxySettings{}, errors.New("invalid archive settings")
+	}
+	return value, nil
+}
+
 type settingsStore struct {
 	mu   sync.Mutex
 	path string
@@ -23,7 +38,7 @@ type settingsStore struct {
 }
 
 func openSettingsStore(path string) (*settingsStore, error) {
-	s := &settingsStore{path: path + ".settings.json", data: proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30}}
+	s := &settingsStore{path: path + ".settings.json", data: defaultProxySettings()}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -31,7 +46,7 @@ func openSettingsStore(path string) (*settingsStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &s.data); err != nil {
+	if s.data, err = decodeProxySettings(data); err != nil {
 		return nil, err
 	}
 	return s, nil

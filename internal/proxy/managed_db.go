@@ -15,6 +15,75 @@ import (
 
 type stateDB struct{ db *sql.DB }
 
+const stateSchemaVersion = 1
+
+var stateTables = []string{
+	"CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+	"CREATE TABLE keys (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
+	"CREATE TABLE accounts (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
+	"CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL)",
+	"CREATE TABLE jobs (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
+	"CREATE TABLE archive_work (id TEXT PRIMARY KEY, data BLOB NOT NULL, created_at INTEGER NOT NULL)",
+	"CREATE TABLE images (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL, bytes INTEGER NOT NULL, original TEXT NOT NULL, thumbnail TEXT NOT NULL)",
+}
+
+var stateIndexes = []string{
+	"CREATE INDEX IF NOT EXISTS images_created ON images(created_at, id)",
+	"CREATE INDEX IF NOT EXISTS images_group ON images(group_id)",
+}
+
+var stateColumns = map[string][]string{
+	"meta":         {"name", "value"},
+	"keys":         {"id", "data"},
+	"accounts":     {"id", "data"},
+	"settings":     {"id", "data"},
+	"jobs":         {"id", "data"},
+	"archive_work": {"id", "data", "created_at"},
+	"images":       {"id", "group_id", "key_id", "key_name", "ip", "created_at", "bytes", "original", "thumbnail"},
+}
+
+func checkStateSchema(db *sql.DB) error {
+	for table, required := range stateColumns {
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			return err
+		}
+		columns := make(map[string]bool)
+		for rows.Next() {
+			var cid, notNull, primary int
+			var name, kind string
+			var fallback sql.NullString
+			if err := rows.Scan(&cid, &name, &kind, &notNull, &fallback, &primary); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, column := range required {
+			if !columns[column] {
+				return fmt.Errorf("incomplete SQLite schema: %s.%s is missing", table, column)
+			}
+		}
+	}
+	return nil
+}
+
+func checkStateIntegrity(db *sql.DB) error {
+	var result string
+	if err := db.QueryRow("PRAGMA integrity_check").Scan(&result); err != nil {
+		return fmt.Errorf("database integrity check: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("database integrity check: %s", result)
+	}
+	return nil
+}
+
 func databaseMigrated(path string) (bool, error) {
 	if _, err := os.Stat(path + ".sqlite"); errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -51,6 +120,11 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
+	_, statErr := os.Stat(path + ".sqlite")
+	existing := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
 	f, err := os.OpenFile(path+".sqlite", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
@@ -68,25 +142,66 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*stateDB, error) { _ = db.Close(); return nil, err }
-	for _, statement := range []string{
-		"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA busy_timeout=5000",
-		"CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
-		"CREATE TABLE IF NOT EXISTS keys (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
-		"CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
-		"CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL)",
-		"CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
-		"CREATE TABLE IF NOT EXISTS archive_work (id TEXT PRIMARY KEY, data BLOB NOT NULL, created_at INTEGER NOT NULL)",
-		"CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL, bytes INTEGER NOT NULL, original TEXT NOT NULL, thumbnail TEXT NOT NULL)",
-		"CREATE INDEX IF NOT EXISTS images_created ON images(created_at, id)",
-		"CREATE INDEX IF NOT EXISTS images_group ON images(group_id)",
-	} {
+	for _, statement := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA busy_timeout=5000"} {
 		if _, err := db.Exec(statement); err != nil {
 			return fail(err)
 		}
 	}
-	var marker string
-	err = db.QueryRow("SELECT value FROM meta WHERE name='migrated'").Scan(&marker)
-	if errors.Is(err, sql.ErrNoRows) {
+	if existing {
+		if err := checkStateIntegrity(db); err != nil {
+			return fail(err)
+		}
+		if err := checkStateSchema(db); err != nil {
+			return fail(err)
+		}
+		var version int
+		if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+			return fail(err)
+		}
+		if version < 0 || version > stateSchemaVersion {
+			return fail(fmt.Errorf("unsupported SQLite schema version %d", version))
+		}
+		var marker string
+		if err := db.QueryRow("SELECT value FROM meta WHERE name='migrated'").Scan(&marker); err != nil || marker != "1" {
+			return fail(errors.New("incomplete SQLite migration; restore the legacy backup before retrying"))
+		}
+		if version == 0 {
+			tx, err := db.Begin()
+			if err != nil {
+				return fail(err)
+			}
+			rollback := func(err error) (*stateDB, error) {
+				_ = tx.Rollback()
+				return fail(fmt.Errorf("SQLite schema upgrade: %w", err))
+			}
+			var data []byte
+			if err := tx.QueryRow("SELECT data FROM settings WHERE id=1").Scan(&data); err != nil {
+				return rollback(err)
+			}
+			value, err := decodeProxySettings(data)
+			if err != nil {
+				return rollback(err)
+			}
+			data, err = json.Marshal(value)
+			if err != nil {
+				return rollback(err)
+			}
+			if _, err := tx.Exec("UPDATE settings SET data=? WHERE id=1", data); err != nil {
+				return rollback(err)
+			}
+			for _, statement := range stateIndexes {
+				if _, err := tx.Exec(statement); err != nil {
+					return rollback(err)
+				}
+			}
+			if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", stateSchemaVersion)); err != nil {
+				return rollback(err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fail(err)
+			}
+		}
+	} else {
 		if err := validateLegacy(keys, accounts, settings, jobs, vault); err != nil {
 			return fail(fmt.Errorf("legacy migration: %w", err))
 		}
@@ -97,6 +212,11 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 		rollback := func(err error) (*stateDB, error) {
 			_ = tx.Rollback()
 			return fail(fmt.Errorf("legacy migration: %w", err))
+		}
+		for _, statement := range append(stateTables, stateIndexes...) {
+			if _, err := tx.Exec(statement); err != nil {
+				return rollback(err)
+			}
 		}
 		for _, k := range keys.keys {
 			if err := putJSON(tx, "keys", k.ID, k); err != nil {
@@ -123,17 +243,18 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 		if _, err = tx.Exec("INSERT INTO meta(name,value) VALUES('migrated','1')"); err != nil {
 			return rollback(err)
 		}
+		if _, err = tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", stateSchemaVersion)); err != nil {
+			return rollback(err)
+		}
 		if err = tx.Commit(); err != nil {
 			return fail(err)
 		}
-	} else if err != nil {
-		return fail(err)
-	} else if marker != "1" {
-		return fail(errors.New("unknown database migration version"))
 	}
-	var check string
-	if err := db.QueryRow("PRAGMA integrity_check").Scan(&check); err != nil || check != "ok" {
-		return fail(fmt.Errorf("database integrity check: %s: %w", check, err))
+	if err := checkStateIntegrity(db); err != nil {
+		return fail(err)
+	}
+	if err := checkStateSchema(db); err != nil {
+		return fail(err)
 	}
 	s := &stateDB{db: db}
 	if err := s.load(keys, accounts, settings, jobs); err != nil {
@@ -188,7 +309,7 @@ func validateLegacy(keys *keyStore, accounts *accountStore, settings *settingsSt
 			}
 		}
 	}
-	if settings.data.ArchiveDays < -1 || settings.data.ArchiveMaxBytes < 1<<20 {
+	if settings.data.ArchiveDays < -1 || settings.data.ArchiveDays > 36500 || settings.data.ArchiveMaxBytes < 1<<20 || settings.data.ArchiveMaxBytes > 1<<40 {
 		return errors.New("invalid archive settings")
 	}
 	return nil
@@ -307,9 +428,11 @@ func (s *stateDB) load(keys *keyStore, accounts *accountStore, settings *setting
 	if err := s.db.QueryRow("SELECT data FROM settings WHERE id=1").Scan(&settingsData); err != nil {
 		return err
 	}
-	if err := json.Unmarshal(settingsData, &settings.data); err != nil {
+	value, err := decodeProxySettings(settingsData)
+	if err != nil {
 		return err
 	}
+	settings.data = value
 	jobs.jobs = make(map[string]durableJob)
 	return load("jobs", func(data []byte) error {
 		var j durableJob
