@@ -9,9 +9,12 @@ import (
 
 var errQueueFull = errors.New("queue full")
 var errKeyQueueFull = errors.New("key queue full")
+var errQueueDraining = errors.New("queue draining")
 
 type ticket struct {
 	ctx       context.Context
+	cancel    context.CancelFunc
+	id        string
 	keyID     string
 	route     string
 	queuedAt  time.Time
@@ -20,6 +23,7 @@ type ticket struct {
 }
 
 type queueEntry struct {
+	ID        string    `json:"id,omitempty"`
 	Position  int       `json:"position,omitempty"`
 	KeyID     string    `json:"key_id,omitempty"`
 	KeyName   string    `json:"key_name"`
@@ -38,31 +42,60 @@ func (h *ManagedHandler) enter(ctx context.Context, keyID, route string, limit i
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	t := &ticket{ctx: ctx, keyID: keyID, route: route, queuedAt: time.Now(), ready: make(chan struct{})}
+	waitCtx, cancel := context.WithCancel(ctx)
+	t := &ticket{ctx: waitCtx, cancel: cancel, keyID: keyID, route: route, queuedAt: time.Now(), ready: make(chan struct{})}
+	if err := h.enqueue(t, limit, nil); err != nil {
+		cancel()
+		return nil, err
+	}
+	release, err := h.waitTicket(t)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() { release(); cancel() }, nil
+}
+
+func (h *ManagedHandler) enqueue(t *ticket, limit int, beforeAppend func() error) error {
 	h.queueMu.Lock()
+	defer h.queueMu.Unlock()
+	return h.enqueueLocked(t, limit, beforeAppend)
+}
+
+func (h *ManagedHandler) enqueueLocked(t *ticket, limit int, beforeAppend func() error) error {
+	if h.draining {
+		return errQueueDraining
+	}
+	if h.active != nil {
+		if t.keyID != "" && limit >= 0 && h.waitingForKeyLocked(t.keyID) >= limit {
+			return errKeyQueueFull
+		}
+		if len(h.waiting) >= h.queueSize {
+			return errQueueFull
+		}
+	}
+	if beforeAppend != nil {
+		if err := beforeAppend(); err != nil {
+			return err
+		}
+	}
 	if h.active == nil {
 		h.active = t
 		t.startedAt = time.Now()
 		close(t.ready)
 	} else {
-		if keyID != "" && limit >= 0 && h.waitingForKeyLocked(keyID) >= limit {
-			h.queueMu.Unlock()
-			return nil, errKeyQueueFull
-		}
-		if len(h.waiting) >= h.queueSize {
-			h.queueMu.Unlock()
-			return nil, errQueueFull
-		}
 		h.waiting = append(h.waiting, t)
 	}
-	h.queueMu.Unlock()
+	return nil
+}
 
+func (h *ManagedHandler) waitTicket(t *ticket) (func(), error) {
 	select {
 	case <-t.ready:
 		return func() { h.finish(t) }, nil
-	case <-ctx.Done():
+	case <-t.ctx.Done():
 		h.cancel(t)
-		return nil, ctx.Err()
+		return nil, t.ctx.Err()
 	}
 }
 
@@ -95,6 +128,9 @@ func (h *ManagedHandler) finish(t *ticket) {
 		return
 	}
 	h.active = nil
+	if h.draining {
+		return
+	}
 	for len(h.waiting) > 0 {
 		next := h.waiting[0]
 		h.waiting[0] = nil
@@ -106,6 +142,36 @@ func (h *ManagedHandler) finish(t *ticket) {
 		next.startedAt = time.Now()
 		close(next.ready)
 		break
+	}
+}
+
+// BeginDrain lets the active request finish and leaves durable waiters on disk.
+func (h *ManagedHandler) BeginDrain() {
+	h.queueMu.Lock()
+	h.draining = true
+	for _, t := range h.waiting {
+		if t.cancel != nil {
+			t.cancel()
+		}
+	}
+	h.queueMu.Unlock()
+}
+
+func (h *ManagedHandler) WaitActive(ctx context.Context) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		h.queueMu.Lock()
+		active := h.active != nil
+		h.queueMu.Unlock()
+		if !active {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -131,11 +197,11 @@ func (h *ManagedHandler) queueState() queueSnapshot {
 	h.queueMu.Lock()
 	state := queueSnapshot{Capacity: h.queueSize, Waiting: make([]queueEntry, 0, len(h.waiting))}
 	if h.active != nil {
-		entry := queueEntry{KeyID: h.active.keyID, Route: h.active.route, QueuedAt: h.active.queuedAt, StartedAt: h.active.startedAt}
+		entry := queueEntry{ID: h.active.id, KeyID: h.active.keyID, Route: h.active.route, QueuedAt: h.active.queuedAt, StartedAt: h.active.startedAt}
 		state.Active = &entry
 	}
 	for i, t := range h.waiting {
-		state.Waiting = append(state.Waiting, queueEntry{Position: i + 1, KeyID: t.keyID, Route: t.route, QueuedAt: t.queuedAt})
+		state.Waiting = append(state.Waiting, queueEntry{ID: t.id, Position: i + 1, KeyID: t.keyID, Route: t.route, QueuedAt: t.queuedAt})
 	}
 	h.queueMu.Unlock()
 

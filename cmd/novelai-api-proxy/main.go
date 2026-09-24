@@ -91,12 +91,18 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		handler.BeginDrain()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Error("shutdown failed", "error", err)
+		}
+		if err := handler.WaitActive(shutdownCtx); err != nil {
+			logger.Warn("active job did not finish before shutdown", "error", err)
 		}
 	}()
 
@@ -104,6 +110,9 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
+	}
+	if ctx.Err() != nil {
+		<-shutdownDone
 	}
 }
 

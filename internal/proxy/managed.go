@@ -38,8 +38,11 @@ type ManagedHandler struct {
 	accounts         *accountStore
 	vault            keyVault
 	settings         *settingsStore
+	jobs             *jobStore
+	jobStaging       chan struct{}
 	queueMu          sync.Mutex
 	queueSize        int
+	draining         bool
 	waiting          []*ticket
 	active           *ticket
 	client           *http.Client
@@ -93,6 +96,10 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if err != nil {
 		return nil, err
 	}
+	jobs, err := openJobStore(cfg.StatePath + ".jobs")
+	if err != nil {
+		return nil, err
+	}
 	transport := cfg.Transport
 	if transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
@@ -108,6 +115,8 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		accounts:         accounts,
 		vault:            vault,
 		settings:         settings,
+		jobs:             jobs,
+		jobStaging:       make(chan struct{}, 4),
 		queueSize:        cfg.QueueSize,
 		client:           &http.Client{Transport: transport, Timeout: 25 * time.Second},
 		imageURL:         imageURL,
@@ -115,6 +124,9 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		quotaTTL:         cfg.QuotaTTL,
 		quotas:           make(map[string]*quotaSnapshot),
 		lastQuotaAttempt: make(map[string]time.Time),
+	}
+	if err := h.restoreJobs(); err != nil {
+		return nil, fmt.Errorf("restore jobs: %w", err)
 	}
 	return h, nil
 }
@@ -171,6 +183,10 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key, ok := h.store.find(keyToken)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/jobs/") {
+		h.serveJobAPI(w, r, key)
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/quota" {
@@ -432,6 +448,10 @@ func (h *ManagedHandler) queueError(w http.ResponseWriter, err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
+	if errors.Is(err, errQueueDraining) {
+		http.Error(w, "service restarting", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Retry-After", "2")
 	http.Error(w, err.Error(), http.StatusTooManyRequests)
 }
@@ -447,6 +467,10 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 		return
 	}
 	defer release()
+	h.executeJob(w, r, key, selected)
+}
+
+func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key clientKey, selected *route) {
 	raw, _ := bearerToken(r)
 	currentKey, ok := h.store.find(raw)
 	if !ok || currentKey.ID != key.ID {

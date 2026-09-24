@@ -2,6 +2,7 @@ services:
   proxy:
     build: .
     restart: unless-stopped
+    stop_grace_period: 8m
     read_only: true
     cap_drop:
       - ALL

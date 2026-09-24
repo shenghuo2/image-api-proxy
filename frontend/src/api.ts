@@ -102,6 +102,7 @@ export interface AdminSettings {
 }
 
 export interface QueueEntry {
+  id?: string
   position?: number
   key_id?: string
   key_name: string
