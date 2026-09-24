@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -68,7 +67,8 @@ func TestManagedAccountPoolAndLegacyBinding(t *testing.T) {
 	if err != nil || len(accountList) != 2 || !accountList[0].TokenConfigured || !accountList[1].TokenConfigured {
 		t.Fatalf("account list: %v, %v", accountList, err)
 	}
-	data, err := os.ReadFile(path + ".accounts.json")
+	var data []byte
+	err = h.db.db.QueryRow("SELECT data FROM accounts WHERE id=?", secondID).Scan(&data)
 	if err != nil || strings.Contains(string(data), secondToken) || strings.Contains(string(data), testNAIToken) {
 		t.Fatal("account tokens must be encrypted at rest")
 	}

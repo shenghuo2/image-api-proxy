@@ -276,16 +276,15 @@ func TestMultiImageRequiresGlobalAndKeyPermission(t *testing.T) {
 	if forwarded.Load() != 1 {
 		t.Fatalf("forwarded %d disabled jobs", forwarded.Load()-1)
 	}
-	reopened, err := openKeyStore(path)
+	reopenedHandler, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted, ok := reopened.find(key); !ok || persisted.AllowMultiImage {
+	if persisted, ok := reopenedHandler.store.find(key); !ok || persisted.AllowMultiImage {
 		t.Fatalf("persisted policy: %+v", persisted)
 	}
-	reopenedSettings, err := openSettingsStore(path)
-	if err != nil || !reopenedSettings.snapshot().AllowMultiImage {
-		t.Fatalf("persisted settings: %v, %v", reopenedSettings, err)
+	if !reopenedHandler.settings.snapshot().AllowMultiImage {
+		t.Fatalf("persisted settings: %v", reopenedHandler.settings.snapshot())
 	}
 }
 
@@ -420,11 +419,11 @@ func TestManagedKeysQuotaAndPersistence(t *testing.T) {
 	if subscription["active"] != false || subscription["isGracePeriod"] != true || subscription["tier"] != float64(2) {
 		t.Fatalf("subscription status = %v", subscription)
 	}
-	reopened, err := openKeyStore(path)
+	reopenedHandler, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted, ok := reopened.find(clientKey); !ok || persisted.FixedSpent != 9 {
+	if persisted, ok := reopenedHandler.store.find(clientKey); !ok || persisted.FixedSpent != 9 {
 		t.Fatalf("persisted key = %+v, found = %v", persisted, ok)
 	}
 	doManaged(t, managedRequest(t, "DELETE", server.URL+"/admin/keys/"+id, testAdminKey, nil), 204)

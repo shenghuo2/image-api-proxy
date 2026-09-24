@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +51,8 @@ func main() {
 		AdminKey: os.Getenv("PROXY_ADMIN_KEY"), NovelAIToken: os.Getenv("PROXY_NAI_TOKEN"),
 		AdminOrigin: os.Getenv("PROXY_ADMIN_ORIGIN"), StatePath: statePath,
 		QueueSize: queueSize, QuotaTTL: quotaTTL,
+		TrustedProxyCIDRs: strings.Split(os.Getenv("PROXY_TRUSTED_PROXY_CIDRS"), ","),
+		LoopbackHostOnly:  os.Getenv("PROXY_BIND_ADDR") == "127.0.0.1",
 	})
 	if err != nil {
 		logger.Error("invalid proxy configuration", "error", err)

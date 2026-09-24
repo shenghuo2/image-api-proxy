@@ -12,23 +12,27 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
 type ManagedConfig struct {
-	AdminKey      string
-	AdminOrigin   string
-	NovelAIToken  string
-	StatePath     string
-	QueueSize     int
-	QuotaTTL      time.Duration
-	ImageUpstream string
-	Transport     http.RoundTripper
+	AdminKey          string
+	AdminOrigin       string
+	NovelAIToken      string
+	StatePath         string
+	QueueSize         int
+	QuotaTTL          time.Duration
+	ImageUpstream     string
+	Transport         http.RoundTripper
+	TrustedProxyCIDRs []string
+	LoopbackHostOnly  bool
 }
 
 type ManagedHandler struct {
@@ -39,6 +43,9 @@ type ManagedHandler struct {
 	vault            keyVault
 	settings         *settingsStore
 	jobs             *jobStore
+	db               *stateDB
+	archive          *archiveManager
+	trustedProxies   []*net.IPNet
 	jobStaging       chan struct{}
 	queueMu          sync.Mutex
 	queueSize        int
@@ -83,20 +90,50 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("image upstream: %w", err)
 	}
-	store, err := openKeyStore(cfg.StatePath)
-	if err != nil {
-		return nil, err
-	}
-	settings, err := openSettingsStore(cfg.StatePath)
+	trusted, err := parseTrustedProxies(cfg.TrustedProxyCIDRs, cfg.LoopbackHostOnly)
 	if err != nil {
 		return nil, err
 	}
 	vault := newKeyVault(cfg.AdminKey)
-	accounts, err := openAccountStore(cfg.StatePath, cfg.NovelAIToken, vault)
+	migrated, err := databaseMigrated(cfg.StatePath)
 	if err != nil {
 		return nil, err
 	}
-	jobs, err := openJobStore(cfg.StatePath + ".jobs")
+	var store *keyStore
+	var settings *settingsStore
+	var accounts *accountStore
+	var jobs *jobStore
+	if migrated {
+		store = &keyStore{path: cfg.StatePath, keys: []clientKey{}}
+		settings = &settingsStore{path: cfg.StatePath + ".settings.json"}
+		accounts = &accountStore{path: cfg.StatePath + ".accounts.json", accounts: []upstreamAccount{}}
+		jobs = &jobStore{dir: cfg.StatePath + ".jobs", jobs: make(map[string]durableJob)}
+		if err := os.MkdirAll(jobs.dir, 0700); err != nil {
+			return nil, err
+		}
+	} else {
+		store, err = openKeyStore(cfg.StatePath)
+		if err != nil {
+			return nil, err
+		}
+		settings, err = openSettingsStore(cfg.StatePath)
+		if err != nil {
+			return nil, err
+		}
+		accounts, err = openAccountStore(cfg.StatePath, cfg.NovelAIToken, vault)
+		if err != nil {
+			return nil, err
+		}
+		jobs, err = openJobStore(cfg.StatePath + ".jobs")
+		if err != nil {
+			return nil, err
+		}
+	}
+	db, err := openStateDB(cfg.StatePath, store, accounts, settings, jobs, vault)
+	if err != nil {
+		return nil, err
+	}
+	archive, err := newArchiveManager(db, cfg.StatePath, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +153,9 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		vault:            vault,
 		settings:         settings,
 		jobs:             jobs,
+		db:               db,
+		archive:          archive,
+		trustedProxies:   trusted,
 		jobStaging:       make(chan struct{}, 4),
 		queueSize:        cfg.QueueSize,
 		client:           &http.Client{Transport: transport, Timeout: 25 * time.Second},
@@ -149,7 +189,7 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if r.URL.EscapedPath() != r.URL.Path || r.URL.RawQuery != "" {
+	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images") {
 		http.Error(w, "unsupported request target", http.StatusBadRequest)
 		return
 	}
@@ -584,7 +624,32 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	upstreamRequest.Body = io.NopCloser(bytes.NewReader(body))
 	upstreamRequest.ContentLength = int64(len(body))
 	tracked := &statusWriter{ResponseWriter: w}
-	h.image.ServeHTTP(tracked, upstreamRequest)
+	var capture *archiveWriter
+	archiveEnabled := (strings.HasSuffix(selected.path, "/ai/generate-image") || strings.HasSuffix(selected.path, "/ai/generate-image-stream")) && h.settings.snapshot().ArchiveEnabled && !current.ArchiveDisabled
+	if archiveEnabled {
+		capture, err = h.archive.capture(tracked)
+		if err != nil {
+			h.archive.recordFailure(err)
+		}
+	}
+	if capture != nil {
+		defer func() { _ = capture.file.Close(); _ = os.Remove(capture.file.Name()) }()
+		h.image.ServeHTTP(capture, upstreamRequest)
+	} else {
+		h.image.ServeHTTP(tracked, upstreamRequest)
+	}
+	if capture != nil {
+		id, idErr := randomHex(16)
+		if idErr != nil {
+			h.archive.recordFailure(idErr)
+		} else {
+			groupID := id
+			if durableID, ok := r.Context().Value(archiveJobIDKey{}).(string); ok {
+				groupID = durableID
+			}
+			h.archive.finishCapture(capture, archiveWork{ID: id, GroupID: groupID, KeyID: current.ID, KeyName: current.Name, IP: h.clientIP(r), Route: selected.path, Completed: time.Now()}, tracked.status >= 200 && tracked.status < 300 && r.Context().Err() == nil)
+		}
+	}
 	if tracked.status < 200 || (tracked.status >= 300 && tracked.status < 400) || tracked.status >= 500 || r.Context().Err() != nil {
 		return // The upstream outcome is uncertain; keep the reservation pending.
 	}

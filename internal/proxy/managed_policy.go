@@ -17,6 +17,7 @@ type keyPolicyInput struct {
 	PurchasedLimit   *int64   `json:"purchased_anlas_limit"`
 	AllowOpus        *bool    `json:"allow_opus"`
 	AllowMultiImage  *bool    `json:"allow_multi_image"`
+	ArchiveEnabled   *bool    `json:"archive_enabled"`
 	OpusLimit        *int64   `json:"opus_limit_images"`
 	OpusLimitMode    *string  `json:"opus_limit_mode"`
 	OpusLimitPercent *float64 `json:"opus_limit_percent"`
@@ -57,6 +58,9 @@ func applyPolicy(k *clientKey, input keyPolicyInput) error {
 	}
 	if input.AllowMultiImage != nil {
 		k.AllowMultiImage = *input.AllowMultiImage
+	}
+	if input.ArchiveEnabled != nil {
+		k.ArchiveDisabled = !*input.ArchiveEnabled
 	}
 	if input.QueueLimit != nil {
 		k.QueueLimit = input.QueueLimit

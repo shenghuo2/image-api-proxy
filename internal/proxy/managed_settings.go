@@ -9,17 +9,21 @@ import (
 )
 
 type proxySettings struct {
-	AllowMultiImage bool `json:"allow_multi_image"`
+	AllowMultiImage bool  `json:"allow_multi_image"`
+	ArchiveEnabled  bool  `json:"archive_enabled"`
+	ArchiveDays     int   `json:"archive_retention_days"`
+	ArchiveMaxBytes int64 `json:"archive_max_bytes"`
 }
 
 type settingsStore struct {
 	mu   sync.Mutex
 	path string
 	data proxySettings
+	db   *stateDB
 }
 
 func openSettingsStore(path string) (*settingsStore, error) {
-	s := &settingsStore{path: path + ".settings.json"}
+	s := &settingsStore{path: path + ".settings.json", data: proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30}}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -42,6 +46,13 @@ func (s *settingsStore) snapshot() proxySettings {
 func (s *settingsStore) set(value proxySettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db != nil {
+		if err := s.db.saveSettings(value); err != nil {
+			return err
+		}
+		s.data = value
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
 		return err
 	}

@@ -10,7 +10,8 @@ FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
 WORKDIR /src
 ARG TARGETOS
 ARG TARGETARCH
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags='-s -w' -o /novelai-api-proxy ./cmd/novelai-api-proxy

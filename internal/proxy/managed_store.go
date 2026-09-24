@@ -31,6 +31,7 @@ type clientKey struct {
 	PurchasedPending int64   `json:"purchased_anlas_pending"`
 	AllowOpus        bool    `json:"allow_opus"`
 	AllowMultiImage  bool    `json:"allow_multi_image"`
+	ArchiveDisabled  bool    `json:"archive_disabled,omitempty"`
 	OpusLimit        int64   `json:"opus_limit_images"`
 	OpusLimitMode    string  `json:"opus_limit_mode,omitempty"`
 	OpusLimitPercent float64 `json:"opus_limit_percent,omitempty"`
@@ -47,6 +48,7 @@ type keyStore struct {
 	mu   sync.Mutex
 	path string
 	keys []clientKey
+	db   *stateDB
 }
 
 func openKeyStore(path string) (*keyStore, error) {
@@ -84,6 +86,13 @@ func (s *keyStore) update(fn func([]clientKey) ([]clientKey, error)) error {
 	next, err := fn(next)
 	if err != nil {
 		return err
+	}
+	if s.db != nil {
+		if err := s.db.replaceKeys(next); err != nil {
+			return err
+		}
+		s.keys = next
+		return nil
 	}
 	data, err := json.Marshal(next)
 	if err != nil {

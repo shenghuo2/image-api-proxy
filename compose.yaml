@@ -16,6 +16,8 @@ services:
       PROXY_QUOTA_TTL: ${PROXY_QUOTA_TTL:-5m}
       PROXY_ADMIN_ORIGIN: ${PROXY_ADMIN_ORIGIN:-}
       PROXY_STATE_PATH: /data/keys.json
+      PROXY_BIND_ADDR: ${PROXY_BIND_ADDR:-127.0.0.1}
+      PROXY_TRUSTED_PROXY_CIDRS: ${PROXY_TRUSTED_PROXY_CIDRS:-}
     volumes:
       - proxy-data:/data
     ports:

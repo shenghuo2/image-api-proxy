@@ -22,6 +22,7 @@ type accountStore struct {
 	mu       sync.Mutex
 	path     string
 	accounts []upstreamAccount
+	db       *stateDB
 }
 
 func openAccountStore(statePath, bootstrapToken string, vault keyVault) (*accountStore, error) {
@@ -33,11 +34,7 @@ func openAccountStore(statePath, bootstrapToken string, vault keyVault) (*accoun
 			if err != nil {
 				return nil, err
 			}
-			if err := s.update(func(_ []upstreamAccount) ([]upstreamAccount, error) {
-				return []upstreamAccount{{ID: defaultAccountID, Name: "默认账号", TokenCiphertext: ciphertext}}, nil
-			}); err != nil {
-				return nil, err
-			}
+			s.accounts = []upstreamAccount{{ID: defaultAccountID, Name: "默认账号", TokenCiphertext: ciphertext}}
 		}
 		return s, nil
 	}
@@ -73,6 +70,13 @@ func (s *accountStore) update(fn func([]upstreamAccount) ([]upstreamAccount, err
 	next, err := fn(append([]upstreamAccount(nil), s.accounts...))
 	if err != nil {
 		return err
+	}
+	if s.db != nil {
+		if err := s.db.replaceAccounts(next); err != nil {
+			return err
+		}
+		s.accounts = next
+		return nil
 	}
 	data, err := json.Marshal(next)
 	if err != nil {

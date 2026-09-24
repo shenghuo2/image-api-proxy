@@ -26,6 +26,7 @@ type publicKey struct {
 	PurchasedRemaining int64   `json:"purchased_anlas_remaining"`
 	AllowOpus          bool    `json:"allow_opus"`
 	AllowMultiImage    bool    `json:"allow_multi_image"`
+	ArchiveEnabled     bool    `json:"archive_enabled"`
 	OpusLimitMode      string  `json:"opus_limit_mode"`
 	OpusLimitPercent   float64 `json:"opus_limit_percent"`
 	OpusLimit          int64   `json:"opus_limit_images"`
@@ -52,7 +53,7 @@ func viewKey(k clientKey) publicKey {
 		AllowPurchased: k.AllowPurchased, PurchasedLimit: k.PurchasedLimit,
 		PurchasedSpent: k.PurchasedSpent, PurchasedPending: k.PurchasedPending,
 		PurchasedRemaining: displayRemaining(purchasedRemaining(k)),
-		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
+		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, ArchiveEnabled: !k.ArchiveDisabled, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
 		OpusLimitMode: opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
 		OpusPending: k.OpusPending, OpusRemaining: displayRemaining(opusRemaining(k)),
 		QueueLimit:     keyQueueLimit(k),
@@ -107,22 +108,45 @@ func decodeAdminBody(r *http.Request, dst any) error {
 
 func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/admin/images" || r.URL.Path == "/admin/images/stats" || strings.HasPrefix(r.URL.Path, "/admin/images/"):
+		h.serveAdminImages(w, r)
 	case r.URL.Path == "/admin/accounts" || strings.HasPrefix(r.URL.Path, "/admin/accounts/"):
 		h.serveAdminAccounts(w, r)
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodGet:
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodPut:
 		var input struct {
-			AllowMultiImage *bool `json:"allow_multi_image"`
+			AllowMultiImage *bool  `json:"allow_multi_image"`
+			ArchiveEnabled  *bool  `json:"archive_enabled"`
+			ArchiveDays     *int   `json:"archive_retention_days"`
+			ArchiveMaxBytes *int64 `json:"archive_max_bytes"`
 		}
-		if err := decodeAdminBody(r, &input); err != nil || input.AllowMultiImage == nil {
+		if err := decodeAdminBody(r, &input); err != nil || (input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil) {
 			http.Error(w, "invalid settings", http.StatusBadRequest)
 			return
 		}
-		if err := h.settings.set(proxySettings{AllowMultiImage: *input.AllowMultiImage}); err != nil {
+		next := h.settings.snapshot()
+		if input.AllowMultiImage != nil {
+			next.AllowMultiImage = *input.AllowMultiImage
+		}
+		if input.ArchiveEnabled != nil {
+			next.ArchiveEnabled = *input.ArchiveEnabled
+		}
+		if input.ArchiveDays != nil {
+			next.ArchiveDays = *input.ArchiveDays
+		}
+		if input.ArchiveMaxBytes != nil {
+			next.ArchiveMaxBytes = *input.ArchiveMaxBytes
+		}
+		if next.ArchiveDays < -1 || next.ArchiveDays > 36500 || next.ArchiveMaxBytes < 1<<20 || next.ArchiveMaxBytes > 1<<40 {
+			http.Error(w, "invalid archive retention", http.StatusBadRequest)
+			return
+		}
+		if err := h.settings.set(next); err != nil {
 			http.Error(w, "settings unavailable", http.StatusInternalServerError)
 			return
 		}
+		h.archive.signal()
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/quota" && r.Method == http.MethodGet:
 		h.serveAdminQuota(w, r, false)

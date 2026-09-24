@@ -23,6 +23,7 @@ const jobRetention = 24 * time.Hour
 type durableJob struct {
 	ID          string      `json:"id"`
 	KeyID       string      `json:"key_id"`
+	ClientIP    string      `json:"client_ip,omitempty"`
 	KeyHash     string      `json:"key_hash"`
 	BodyHash    string      `json:"body_hash"`
 	Route       string      `json:"route"`
@@ -59,6 +60,7 @@ type jobStore struct {
 	mu   sync.Mutex
 	dir  string
 	jobs map[string]durableJob
+	db   *stateDB
 }
 
 func openJobStore(dir string) (*jobStore, error) {
@@ -144,6 +146,13 @@ func commitJobFile(staged, path string) error {
 }
 
 func (s *jobStore) saveLocked(job durableJob) error {
+	if s.db != nil {
+		if err := s.db.saveJob(job); err != nil {
+			return err
+		}
+		s.jobs[job.ID] = job
+		return nil
+	}
 	data, err := json.Marshal(job)
 	if err != nil {
 		return err
@@ -229,8 +238,14 @@ func (s *jobStore) recover() error {
 func (s *jobStore) delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.Remove(s.path(id, ".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	if s.db != nil {
+		if err := s.db.deleteJob(id); err != nil {
+			return err
+		}
+	} else {
+		if err := os.Remove(s.path(id, ".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	delete(s.jobs, id)
 	_ = os.Remove(s.path(id, ".body"))
@@ -430,7 +445,7 @@ func (h *ManagedHandler) submitDurableJob(w http.ResponseWriter, r *http.Request
 		id = "j_" + random
 	}
 	hash := sha256.Sum256(body)
-	job := durableJob{ID: id, KeyID: key.ID, KeyHash: key.Hash, BodyHash: hex.EncodeToString(hash[:]), Route: selected.path, ContentType: r.Header.Get("Content-Type"), Accept: r.Header.Get("Accept"), State: "waiting", QueuedAt: time.Now()}
+	job := durableJob{ID: id, KeyID: key.ID, ClientIP: h.clientIP(r), KeyHash: key.Hash, BodyHash: hex.EncodeToString(hash[:]), Route: selected.path, ContentType: r.Header.Get("Content-Type"), Accept: r.Header.Get("Accept"), State: "waiting", QueuedAt: time.Now()}
 	if existing, ok := h.jobs.get(id); ok {
 		replyExistingJob(w, existing, job)
 		return
@@ -544,7 +559,7 @@ func (h *ManagedHandler) runDurableJob(t *ticket, id string) {
 		return
 	}
 	defer os.Remove(f.Name())
-	request, err := http.NewRequestWithContext(t.ctx, http.MethodPost, job.Route, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(context.WithValue(context.WithValue(t.ctx, archiveClientIPKey{}, job.ClientIP), archiveJobIDKey{}, job.ID), http.MethodPost, job.Route, bytes.NewReader(body))
 	if err != nil {
 		_ = f.Close()
 		finishInterrupted()

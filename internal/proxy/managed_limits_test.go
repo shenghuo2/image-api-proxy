@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,7 +72,8 @@ func TestKeyRevealRotationAndLegacyLedger(t *testing.T) {
 	if !upper || !lower || !digit {
 		t.Fatal("key must contain mixed case and digits")
 	}
-	data, err := os.ReadFile(path)
+	var data []byte
+	err = h.db.db.QueryRow("SELECT data FROM keys WHERE id=?", created["client"].(map[string]any)["id"]).Scan(&data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,13 @@ func TestKeyRevealRotationAndLegacyLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.viewAdminKey(restarted.store.snapshot()[1]).Key != raw {
+	var restored clientKey
+	for _, candidate := range restarted.store.snapshot() {
+		if candidate.ID == created["client"].(map[string]any)["id"] {
+			restored = candidate
+		}
+	}
+	if restarted.viewAdminKey(restored).Key != raw {
 		t.Fatal("key unavailable after restart")
 	}
 	rotated := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys/legacy/rotate", testAdminKey, nil), 200)
