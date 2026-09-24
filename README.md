@@ -12,7 +12,7 @@
 docker compose up -d --build
 ```
 
-Compose 默认仅把服务映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 key 哈希与额度账本。需要局域网访问时，在 `.env` 中设置 `PROXY_BIND_ADDR` 为主机的局域网 IP，前端开发服务器使用 `--host 0.0.0.0` 启动。本机直接运行：
+Compose 默认仅把服务映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 key 哈希、加密的客户端密钥与额度账本。需要局域网访问时，在 `.env` 中设置 `PROXY_BIND_ADDR` 为主机的局域网 IP，前端开发服务器使用 `--host 0.0.0.0` 启动。本机直接运行：
 
 ```bash
 PROXY_ADMIN_KEY='<管理员密钥>' PROXY_NAI_TOKEN='<NovelAI Token>' \
@@ -23,7 +23,7 @@ PROXY_ADMIN_KEY='<管理员密钥>' PROXY_NAI_TOKEN='<NovelAI Token>' \
 
 ## 管理面板
 
-独立前端位于 [`frontend/`](frontend/)，使用 React、Vite 和 Astryx Design System。开发与独立部署步骤见 [frontend/README.md](frontend/README.md)。面板可签发、调整、撤销 key，核对待处理额度，并按 key 查看累计估算用量。配置页可启用单次多图的全局权限，再逐 key 授权；默认关闭。面板不自动轮询官方额度。
+独立前端位于 [`frontend/`](frontend/)，使用 React、Vite 和 Astryx Design System。开发与独立部署步骤见 [frontend/README.md](frontend/README.md)。面板可签发、查看、轮换、调整及撤销 key，核对待处理额度，并按 key 查看累计估算用量。各类上限可设为 `-1`（不设本地累计上限）；Opus 也可按满额百分比分配。配置页可启用单次多图的全局权限，再逐 key 授权；默认关闭。面板不自动轮询官方额度。
 
 ## 开发验证
 

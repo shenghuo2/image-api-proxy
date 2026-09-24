@@ -51,25 +51,26 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
   "$BASE/admin/keys"
 ```
 
-创建响应的顶层 `key` 是新签发的客户端 Bearer key，只返回一次；账本只保存其 SHA-256 哈希。管理接口如下：
+创建响应的顶层 `key` 是新签发的客户端 Bearer key，格式为 `pst-` 加 24 位大小写字母及数字。账本保存 SHA-256 哈希用于认证，并以管理员密钥派生的密钥加密保存明文，供管理员再次查看。更换 `PROXY_ADMIN_KEY` 后，旧密文无法解密，需逐把轮换。管理接口如下：
 
 | 方法与路径 | 用途 |
 | --- | --- |
 | `GET /admin/quota` | 读取缓存的官方快照、预计余额、订阅点数与付费购入点数的分配额、Opus 配额和队列长度 |
 | `POST /admin/quota/refresh` | 请求刷新官方快照；距上次成功刷新不足 30 秒时返回缓存 |
-| `GET /admin/keys` | 列出每把 key 的权限、各额度上限/已用/待核对/剩余和撤销状态 |
+| `GET /admin/keys` | 列出每把 key 的权限、额度与状态；可解密的新 key 含 `key` 字段 |
 | `GET /admin/settings` | 查看全局功能配置，默认 `allow_multi_image: false` |
 | `PUT /admin/settings` | 提交 `{"allow_multi_image":true}`，允许为 key 分配多图权限；关闭后立即阻断所有多图请求 |
 | `POST /admin/keys` | 设置名称与权限，签发 key；未指定的权限默认关闭 |
 | `PUT /admin/keys/{id}` | 只修改提交的字段，例如 `{"allow_purchased_anlas":true,"purchased_anlas_limit":20}` |
 | `DELETE /admin/keys/{id}` | 撤销 key，释放未用分配额 |
+| `POST /admin/keys/{id}/rotate` | 轮换客户端密钥，旧 key 立即失效；保留 ID、权限、额度与用量，响应返回新 key |
 | `POST /admin/keys/{id}/reconcile` | `{"charged_anlas":N,"opus_charged_images":M}`，人工结算待核对预留额；Opus 字段可省略，默认保留原预留次数 |
 
-`allow_fixed_anlas`、`allow_purchased_anlas` 和 `allow_opus` 是独立开关，分别对应订阅点数、付费购入点数和 Opus 配额。对应的 `fixed_anlas_limit`、`purchased_anlas_limit` 和 `opus_limit_images` 是这把 key 的**累计上限**；提高上限即可追加可用额。Opus 单位是可使用的免费生成次数，所有 key 的请求仍消耗同一个官方 Opus 配额。关闭权限会立刻使该项剩余可用额变为 0，但不清除已用记录。只有 Opus 权限、没有 Anlas 权限的 key 可以使用符合免费条件且无付费附加项的生成请求；当官方会用 Opus 免费生成时，没有 Opus 权限的 key 会被拒绝，即使它有 Anlas 预算，因为代理无法要求 NovelAI 改扣点数。
+`allow_fixed_anlas`、`allow_purchased_anlas` 和 `allow_opus` 是独立开关，分别对应订阅点数、付费购入点数和 Opus 配额。对应的 `fixed_anlas_limit`、`purchased_anlas_limit` 和 `opus_limit_images` 是这把 key 的**累计上限**；提高上限即可追加可用额。三种上限均可设为 `-1`，表示不设本地累计上限，实际请求仍受预计官方余额和权限约束。Opus 可将 `opus_limit_mode` 设为 `percent` 并使用 `opus_limit_percent`（0–100），以估算满额 1730 次折算累计上限：10% 为 173 次，向下取整；`images` 模式使用 `opus_limit_images`。`opus_effective_limit_images` 返回当前生效的折算次数。所有 key 的请求仍消耗同一个官方 Opus 配额。关闭权限会立刻使该项剩余可用额变为 0，但不清除已用记录。只有 Opus 权限、没有 Anlas 权限的 key 可以使用符合免费条件且无付费附加项的生成请求；当官方会用 Opus 免费生成时，没有 Opus 权限的 key 会被拒绝，即使它有 Anlas 预算，因为代理无法要求 NovelAI 改扣点数。
 
 `allow_multi_image` 是逐 key 的单次多图权限。必须先打开全局同名配置才能为新 key 开启；旧账本及新 key 默认关闭。关闭全局配置时已有 key 的授权记录保留，但多图请求立即不可用。
 
-签发或提高分配额时，代理使用缓存的官方订阅点数与付费购入点数余额加上本地预计扣减分别校验；各类有效 key 的剩余分配额不能超过对应的预计余额。旧版 `allocation_anlas` 仍可作为订阅点数上限的简写，旧账本也会映射为订阅点数策略。NovelAI 决定实际先扣哪一类 Anlas，代理无法指定官方的扣费来源；这两个开关和上限控制的是**本地预算分类**，不是官方子账户。
+签发或提高有限分配额时，代理使用缓存的官方订阅点数与付费购入点数余额加上本地预计扣减分别校验；有限额度的有效 key 剩余分配额不能超过对应的预计余额。无限额度不预留固定点数，多把无限 key 可共享官方剩余额；管理统计中的 `unlimited_*_keys` 显示此类 key 数量，`unallocated_*` 只计算有限分配。旧版 `allocation_anlas` 仍可作为订阅点数上限的简写，旧账本也会映射为订阅点数策略。旧哈希 key 仍有效但无法显示明文，可通过轮换转换成新格式。NovelAI 决定实际先扣哪一类 Anlas，代理无法指定官方的扣费来源；这两个开关和上限控制的是**本地预算分类**，不是官方子账户。
 
 ## 客户端额度
 
@@ -78,7 +79,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/quota"
 curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 ```
 
-`GET /quota` 返回该 key 的三组权限、累计上限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求。`GET /user/subscription` 使用缓存，保留官方的 `active`、`isGracePeriod` 和 `tier`；`trainingStepsLeft` 的 fixed/purchased 字段分别显示该 key 的订阅点数与付费购入点数本地剩余额（受预计官方余额约束）。`usage` 显示共享 Opus 配额与该 key 剩余次数的较小值；无 Opus 权限或次数用尽时为 `null`。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
+`GET /quota` 返回该 key 的三组权限、累计上限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。无限本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方的 `active`、`isGracePeriod` 和 `tier`；`trainingStepsLeft` 的 fixed/purchased 字段分别显示该 key 的订阅点数与付费购入点数本地剩余额（受预计官方余额约束）。`usage` 显示共享 Opus 配额与该 key 剩余次数的较小值；无 Opus 权限或次数用尽时为 `null`。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
 
 管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示；现有账本不提供按日历史曲线。
 

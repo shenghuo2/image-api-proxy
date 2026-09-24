@@ -6,7 +6,9 @@
 
 ## 1. 获取客户端 key
 
-由管理员在管理面板为接入项目签发一把客户端 key，开启所需的订阅点数、付费购入点数或 Opus 配额权限，并设置累计上限。建议每个项目使用独立的 key，便于撤销和查看用量。明文 key 只显示一次，请保存在项目的服务端密钥配置中。
+由管理员在管理面板为接入项目签发一把客户端 key，开启所需的订阅点数、付费购入点数或 Opus 配额权限，并设置累计上限。建议每个项目使用独立的 key，便于撤销和查看用量。新 key 使用 `pst-` 加 24 位随机字符；管理员可在管理面板再次查看。旧版 key 需轮换后才可查看明文，轮换会使旧 key 立即失效。接入项目仍应将 key 保存在服务端密钥配置中。
+
+本地累计上限可设为 `-1`，表示不再另设每把 key 的累计限制，实际使用仍受官方账户余额约束。Opus 可按次数或按满额百分比限制；百分比按估算满额 1730 次向下折算，例如 10% 为 173 次。
 
 接入项目只需知道代理根地址和这把客户端 key。代理在转发请求时将客户端 key 替换为服务端持有的 NovelAI Token；接入项目不需要持有官方 Token。
 
@@ -129,7 +131,7 @@ with open("request.json", "rb") as source:
 | `name`、`id`、`revoked` | key 备注名、管理 ID、撤销状态 |
 | `allow_fixed_anlas`、`fixed_anlas_limit`、`fixed_anlas_spent`、`fixed_anlas_pending`、`fixed_anlas_remaining` | 订阅点数权限、累计上限、估算已用、待核对和本地剩余 |
 | `allow_purchased_anlas` 及对应的 `purchased_anlas_*` | 付费购入点数的同类数据 |
-| `allow_opus`、`opus_limit_images`、`opus_used_images`、`opus_pending_images`、`opus_remaining_images` | Opus 免费生成权限和次数 |
+| `allow_opus`、`opus_limit_images`、`opus_limit_mode`、`opus_limit_percent`、`opus_effective_limit_images`、`opus_used_images`、`opus_pending_images`、`opus_remaining_images` | Opus 免费生成权限、限制模式和次数；百分比按满额约 1730 次折算 |
 | `allow_multi_image` | 此 key 的多图授权；还需全局配置开启才生效 |
 | `allocated_anlas`、`spent_anlas`、`pending_anlas`、`remaining_anlas` | 两类点数的合计 |
 | `queue_length` | 当前排队长度 |
