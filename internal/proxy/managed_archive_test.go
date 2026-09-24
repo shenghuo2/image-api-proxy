@@ -584,3 +584,46 @@ func TestArchiveClientDisconnectDoesNotCommit(t *testing.T) {
 		t.Fatalf("disconnected response queued for archive: %d, %v", count, err)
 	}
 }
+
+func TestArchiveDurableJobUsesSubmissionIP(t *testing.T) {
+	red := archiveTestPNG(color.RGBA{R: 255, A: 255})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/subscription" {
+			_, _ = io.WriteString(w, `{"active":true,"tier":2,"trainingStepsLeft":{"fixedTrainingStepsLeft":1000,"purchasedTrainingSteps":0}}`)
+			return
+		}
+		_, _ = w.Write(red)
+	}))
+	defer upstream.Close()
+	h, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, NovelAIToken: testNAIToken, StatePath: filepath.Join(t.TempDir(), "keys.json"), ImageUpstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/settings", testAdminKey, map[string]any{"archive_enabled": true}), 200)
+	created := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "durable-archive", "allow_fixed_anlas": true, "fixed_anlas_limit": 100}), 201)
+	body := `{"model":"nai-diffusion-4-5-full","parameters":{"width":512,"height":512,"steps":12,"n_samples":1}}`
+	req := httptest.NewRequest("POST", "/jobs/ai/generate-image", strings.NewReader(body))
+	req.RemoteAddr = "198.51.100.18:4321"
+	req.Header.Set("Authorization", "Bearer "+created["key"].(string))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != 202 {
+		t.Fatalf("submit status %d: %s", response.Code, response.Body.String())
+	}
+	var submitted jobStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &submitted); err != nil {
+		t.Fatal(err)
+	}
+	waitArchiveCount(t, h, 1)
+	var groupID, ip, keyName string
+	if err := h.db.db.QueryRow("SELECT group_id,ip,key_name FROM images LIMIT 1").Scan(&groupID, &ip, &keyName); err != nil {
+		t.Fatal(err)
+	}
+	if groupID != submitted.ID || ip != "198.51.100.18" || keyName != "durable-archive" {
+		t.Fatalf("durable metadata: group=%s ip=%s key=%s", groupID, ip, keyName)
+	}
+}
