@@ -124,6 +124,7 @@ button:disabled { cursor: not-allowed; }
 .mobile-key-list { display: none; }
 .segmented { display: inline-flex; align-items: center; padding: 3px; border: 1px solid #e1e6ec; border-radius: 7px; background: #fff; }
 .segmented button { min-height: 28px; padding: 0 11px; border: 0; border-radius: 5px; color: #7a8795; background: transparent; font-size: 11px; font-weight: 650; white-space: nowrap; }.segmented button.active { color: #1c5ecb; background: #eaf1ff; }
+.policy-segmented { margin-top: 13px; }
 .check-line { display: inline-flex; align-items: center; gap: 7px; color: #626e7d; font-size: 12px; white-space: nowrap; }.check-line input { accent-color: #1d6be5; }
 .empty-state { padding: 38px 20px; color: #8b97a5; font-size: 13px; text-align: center; }
 .inline-alert { padding: 11px 13px; border: 1px solid #f4c5be; border-radius: 6px; color: #a74436; background: #fff3f0; font-size: 12px; }
@@ -196,6 +197,8 @@ button:disabled { cursor: not-allowed; }
   .segmented { max-width: 100%; overflow-x: auto; }
 }
 @media (max-width: 390px) {
+  .field.inline { align-items: stretch; flex-direction: column; }
+  .field.inline input { width: 100%; }
   .side-nav button { padding: 0 6px; gap: 3px; font-size: 10px; }
   .side-nav button svg { width: 14px; height: 14px; }
   .side-nav button span { display: none; }

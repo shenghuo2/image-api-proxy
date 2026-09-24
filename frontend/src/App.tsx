@@ -3,7 +3,7 @@ import { Button } from '@astryxdesign/core/Button'
 import {
   ArrowRight, BarChart3, Check, Clock3, Copy, CreditCard,
   KeyRound, LayoutDashboard, LockKeyhole, LogOut, Pencil, Plus,
-  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap,
+  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw,
 } from 'lucide-react'
 import { api, apiAddress, ApiError, type AdminQuota, type AdminSettings, type ClientKey, type KeyPolicy } from './api'
 
@@ -13,12 +13,15 @@ type DialogState =
   | { type: 'edit'; key: ClientKey }
   | { type: 'reconcile'; key: ClientKey }
   | { type: 'revoke'; key: ClientKey }
+  | { type: 'rotate'; key: ClientKey }
   | { type: 'reveal'; key: string; name: string }
   | null
 
 const sessionKey = 'novelai-proxy-admin-key'
 const number = new Intl.NumberFormat('zh-CN')
 const fmt = (value: number) => number.format(Math.max(0, value))
+const fmtLimit = (value: number) => value === -1 ? '不限' : fmt(value)
+const opusLimit = (key: ClientKey) => key.opus_limit_mode === 'percent' ? `${key.opus_limit_percent}% ≈ ${fmt(key.opus_effective_limit_images)} 次` : fmtLimit(key.opus_limit_images)
 const committedAnlas = (key: ClientKey) => Math.max(0, key.spent_anlas - key.pending_anlas)
 const committedOpus = (key: ClientKey) => Math.max(0, key.opus_used_images - key.opus_pending_images)
 const clampPercent = (used: number, limit: number) => limit > 0 ? Math.min(100, Math.max(0, used / limit * 100)) : 0
@@ -97,14 +100,14 @@ function Metric({ icon, label, value, detail, tone }: { icon: ReactNode; label: 
 
 function QuotaBand({ quota, error, onRefresh, refreshing }: { quota: AdminQuota | null; error: string | null; onRefresh: () => void; refreshing: boolean }) {
   const rows = [
-    { label: '订阅点数', projected: quota?.projected_fixed_anlas ?? 0, allocated: quota?.allocated_fixed_anlas ?? 0, available: quota?.unallocated_fixed_anlas ?? 0, tone: 'blue' },
-    { label: '付费购入点数', projected: quota?.projected_purchased_anlas ?? 0, allocated: quota?.allocated_purchased_anlas ?? 0, available: quota?.unallocated_purchased_anlas ?? 0, tone: 'orange' },
+    { label: '订阅点数', projected: quota?.projected_fixed_anlas ?? 0, allocated: quota?.allocated_fixed_anlas ?? 0, available: quota?.unallocated_fixed_anlas ?? 0, unlimited: quota?.unlimited_fixed_keys ?? 0, tone: 'blue' },
+    { label: '付费购入点数', projected: quota?.projected_purchased_anlas ?? 0, allocated: quota?.allocated_purchased_anlas ?? 0, available: quota?.unallocated_purchased_anlas ?? 0, unlimited: quota?.unlimited_purchased_keys ?? 0, tone: 'orange' },
   ]
   return <section className="page-section quota-section">
     <div className="section-heading"><div><span className="eyebrow">UPSTREAM QUOTA</span><h2>服务账户额度</h2></div><Button label="刷新官方额度" variant="secondary" size="sm" icon={<RefreshCw size={15} />} onClick={onRefresh} isLoading={refreshing} /></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
     <div className="quota-grid">
-      {rows.map((row) => <div className="quota-column" key={row.label}><div className="quota-name"><span className={`legend-dot ${row.tone}`} />{row.label}</div><strong>{quota ? fmt(row.projected) : '—'}</strong><span className="quota-caption">预计可用</span><div className="quota-track"><span className={row.tone} style={{ width: `${clampPercent(row.allocated, row.projected)}%` }} /></div><div className="quota-meta"><span>已分配 <b>{quota ? fmt(row.allocated) : '—'}</b></span><span>待分配 <b>{quota ? fmt(row.available) : '—'}</b></span></div></div>)}
+      {rows.map((row) => <div className="quota-column" key={row.label}><div className="quota-name"><span className={`legend-dot ${row.tone}`} />{row.label}</div><strong>{quota ? fmt(row.projected) : '—'}</strong><span className="quota-caption">预计可用</span><div className="quota-track"><span className={row.tone} style={{ width: `${clampPercent(row.allocated, row.projected)}%` }} /></div><div className="quota-meta"><span>有限分配 <b>{quota ? fmt(row.allocated) : '—'}</b></span><span>未预留 <b>{quota ? fmt(row.available) : '—'}</b></span></div>{row.unlimited > 0 && <div className="quota-caption">{fmt(row.unlimited)} 把不限额度密钥共享余额</div>}</div>)}
       <div className="quota-column opus-column"><div className="quota-name"><span className="legend-dot purple" />Opus 配额</div><strong>{quota ? `${Math.max(0, quota.projected_opus_percent).toFixed(1)}%` : '—'}</strong><span className="quota-caption">预计剩余</span><div className="opus-meter"><span style={{ width: `${Math.min(100, Math.max(0, quota?.projected_opus_percent ?? 0))}%` }} /></div><div className="quota-meta"><span>{quota ? `Tier ${quota.tier}` : '未连接'}</span><span>{quota?.active ? '订阅有效' : quota?.isGracePeriod ? '宽限期' : '订阅未激活'}</span></div></div>
     </div>
   </section>
@@ -144,20 +147,20 @@ function Overview({ keys, quota, quotaError, onRefreshQuota, refreshingQuota, se
   </>
 }
 
-function KeyActions({ item, onEdit, onReconcile, onRevoke }: { item: ClientKey; onEdit: () => void; onReconcile: () => void; onRevoke: () => void }) {
+function KeyActions({ item, onEdit, onReconcile, onRevoke, onReveal, onRotate }: { item: ClientKey; onEdit: () => void; onReconcile: () => void; onRevoke: () => void; onReveal: () => void; onRotate: () => void }) {
   if (item.revoked) return <span className="muted-text">—</span>
-  return <div className="row-actions"><IconAction label={`编辑 ${item.name}`} icon={<Pencil size={16} />} onClick={onEdit} />{item.pending_anlas + item.opus_pending_images > 0 && <IconAction label={`核对 ${item.name}`} icon={<SlidersHorizontal size={16} />} onClick={onReconcile} />}<IconAction label={`撤销 ${item.name}`} icon={<Trash2 size={16} />} onClick={onRevoke} danger /></div>
+  return <div className="row-actions">{item.key && <IconAction label={`查看 ${item.name} 的密钥`} icon={<Eye size={16} />} onClick={onReveal} />}<IconAction label={`轮换 ${item.name} 的密钥`} icon={<RotateCw size={16} />} onClick={onRotate} /><IconAction label={`编辑 ${item.name}`} icon={<Pencil size={16} />} onClick={onEdit} />{item.pending_anlas + item.opus_pending_images > 0 && <IconAction label={`核对 ${item.name}`} icon={<SlidersHorizontal size={16} />} onClick={onReconcile} />}<IconAction label={`撤销 ${item.name}`} icon={<Trash2 size={16} />} onClick={onRevoke} danger /></div>
 }
 
-function KeysPage({ keys, onCreate, onEdit, onReconcile, onRevoke }: { keys: ClientKey[]; onCreate: () => void; onEdit: (key: ClientKey) => void; onReconcile: (key: ClientKey) => void; onRevoke: (key: ClientKey) => void }) {
+function KeysPage({ keys, onCreate, onEdit, onReconcile, onRevoke, onReveal, onRotate }: { keys: ClientKey[]; onCreate: () => void; onEdit: (key: ClientKey) => void; onReconcile: (key: ClientKey) => void; onRevoke: (key: ClientKey) => void; onReveal: (key: ClientKey) => void; onRotate: (key: ClientKey) => void }) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'active' | 'all' | 'revoked'>('active')
   const visible = useMemo(() => keys.filter((item) => (filter === 'all' || (filter === 'active' ? !item.revoked : item.revoked)) && `${item.name} ${item.id}`.toLowerCase().includes(search.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')), [keys, search, filter])
   return <>
     <div className="page-intro"><div><span className="eyebrow">ACCESS CONTROL</span><h1>密钥管理</h1><p>{fmt(keys.filter((key) => !key.revoked).length)} 把有效密钥</p></div><Button label="签发密钥" variant="primary" icon={<Plus size={17} />} onClick={onCreate} /></div>
     <section className="page-section key-section"><div className="section-heading key-heading"><div><h2>分发密钥</h2></div><div className="table-tools"><label className="search-field"><Search size={16} /><input aria-label="搜索密钥" placeholder="搜索名称或 ID" value={search} onChange={(event) => setSearch(event.target.value)} /></label><select aria-label="筛选密钥状态" value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="active">有效</option><option value="all">全部</option><option value="revoked">已撤销</option></select></div></div>
-      <div className="table-scroll"><table className="data-table key-table"><thead><tr><th>密钥</th><th>状态</th><th>订阅点数</th><th>付费购入点数</th><th>Opus 配额</th><th>待核对</th><th className="actions-head">操作</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></td><td><div className="table-number">{fmt(item.fixed_anlas_spent)} <small>/ {fmt(item.fixed_anlas_limit)}</small></div><div className="mini-track"><span className="blue" style={{ width: `${clampPercent(item.fixed_anlas_spent, item.fixed_anlas_limit)}%` }} /></div></td><td><div className="table-number">{fmt(item.purchased_anlas_spent)} <small>/ {fmt(item.purchased_anlas_limit)}</small></div><div className="mini-track"><span className="orange" style={{ width: `${clampPercent(item.purchased_anlas_spent, item.purchased_anlas_limit)}%` }} /></div></td><td><div className="table-number">{fmt(item.opus_used_images)} <small>/ {fmt(item.opus_limit_images)}</small></div><div className="mini-track"><span className="purple" style={{ width: `${clampPercent(item.opus_used_images, item.opus_limit_images)}%` }} /></div></td><td>{fmt(item.pending_anlas + item.opus_pending_images)}</td><td><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} /></td></tr>)}</tbody></table></div>
-      <div className="mobile-key-list">{visible.map((item) => <article className="mobile-key" key={item.id}><div className="mobile-key-head"><KeyIdentity item={item} /><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></div><div className="mobile-key-stats"><span>订阅点数 <b>{fmt(item.fixed_anlas_spent)} / {fmt(item.fixed_anlas_limit)}</b></span><span>付费购入点数 <b>{fmt(item.purchased_anlas_spent)} / {fmt(item.purchased_anlas_limit)}</b></span><span>Opus 配额 <b>{fmt(item.opus_used_images)} / {fmt(item.opus_limit_images)}</b></span><span>待核对 <b>{fmt(item.pending_anlas + item.opus_pending_images)}</b></span></div><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} /></article>)}</div>
+      <div className="table-scroll"><table className="data-table key-table"><thead><tr><th>密钥</th><th>状态</th><th>订阅点数</th><th>付费购入点数</th><th>Opus 配额</th><th>待核对</th><th className="actions-head">操作</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></td><td><div className="table-number">{fmt(item.fixed_anlas_spent)} <small>/ {fmtLimit(item.fixed_anlas_limit)}</small></div><div className="mini-track"><span className="blue" style={{ width: `${clampPercent(item.fixed_anlas_spent, item.fixed_anlas_limit)}%` }} /></div></td><td><div className="table-number">{fmt(item.purchased_anlas_spent)} <small>/ {fmtLimit(item.purchased_anlas_limit)}</small></div><div className="mini-track"><span className="orange" style={{ width: `${clampPercent(item.purchased_anlas_spent, item.purchased_anlas_limit)}%` }} /></div></td><td><div className="table-number">{fmt(item.opus_used_images)} <small>/ {opusLimit(item)}</small></div><div className="mini-track"><span className="purple" style={{ width: `${clampPercent(item.opus_used_images, item.opus_effective_limit_images)}%` }} /></div></td><td>{fmt(item.pending_anlas + item.opus_pending_images)}</td><td><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} onReveal={() => onReveal(item)} onRotate={() => onRotate(item)} /></td></tr>)}</tbody></table></div>
+      <div className="mobile-key-list">{visible.map((item) => <article className="mobile-key" key={item.id}><div className="mobile-key-head"><KeyIdentity item={item} /><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></div><div className="mobile-key-stats"><span>订阅点数 <b>{fmt(item.fixed_anlas_spent)} / {fmtLimit(item.fixed_anlas_limit)}</b></span><span>付费购入点数 <b>{fmt(item.purchased_anlas_spent)} / {fmtLimit(item.purchased_anlas_limit)}</b></span><span>Opus 配额 <b>{fmt(item.opus_used_images)} / {opusLimit(item)}</b></span><span>待核对 <b>{fmt(item.pending_anlas + item.opus_pending_images)}</b></span></div><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} onReveal={() => onReveal(item)} onRotate={() => onRotate(item)} /></article>)}</div>
       {!visible.length && <div className="empty-state">没有匹配的密钥</div>}
       <div className="table-footer">显示 {fmt(visible.length)} / {fmt(keys.length)} 把密钥</div>
     </section>
@@ -188,13 +191,13 @@ function SettingsPage({ settings, busy, onChange }: { settings: AdminSettings | 
   </>
 }
 
-const emptyPolicy: KeyPolicy = { name: '', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_images: 0, allow_multi_image: false }
+const emptyPolicy: KeyPolicy = { name: '', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_mode: 'images', opus_limit_percent: 0, opus_limit_images: 0, allow_multi_image: false }
 
 function KeyForm({ existing, multiImageAvailable, busy, error, onSave, onClose }: { existing?: ClientKey; multiImageAvailable: boolean; busy: boolean; error: string | null; onSave: (policy: KeyPolicy) => Promise<void>; onClose: () => void }) {
   const [policy, setPolicy] = useState<KeyPolicy>(existing ? {
     name: existing.name, allow_fixed_anlas: existing.allow_fixed_anlas, fixed_anlas_limit: existing.fixed_anlas_limit,
     allow_purchased_anlas: existing.allow_purchased_anlas, purchased_anlas_limit: existing.purchased_anlas_limit,
-    allow_opus: existing.allow_opus, opus_limit_images: existing.opus_limit_images, allow_multi_image: existing.allow_multi_image,
+    allow_opus: existing.allow_opus, opus_limit_mode: existing.opus_limit_mode, opus_limit_percent: existing.opus_limit_percent, opus_limit_images: existing.opus_limit_images, allow_multi_image: existing.allow_multi_image,
   } : emptyPolicy)
   const update = <K extends keyof KeyPolicy>(key: K, value: KeyPolicy[K]) => setPolicy((previous) => ({ ...previous, [key]: value }))
   const submit = (event: FormEvent) => {
@@ -203,9 +206,9 @@ function KeyForm({ existing, multiImageAvailable, busy, error, onSave, onClose }
   }
   return <form className="policy-form" onSubmit={submit}>
     <div className="field"><label htmlFor="key-name">名称</label><input id="key-name" value={policy.name} maxLength={80} onChange={(event) => update('name', event.target.value)} placeholder="例如：生产环境" required autoFocus /></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>订阅点数</strong><small>订阅获得的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_fixed_anlas} onChange={(event) => update('allow_fixed_anlas', event.target.checked)} aria-label="允许使用订阅点数" /><span /></label></div><div className="field inline"><label htmlFor="fixed-limit">累计上限</label><input id="fixed-limit" type="number" min="0" max="1000000000" step="1" value={policy.fixed_anlas_limit} onChange={(event) => update('fixed_anlas_limit', Number(event.target.value))} /></div></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>付费购入点数</strong><small>另行购买的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_purchased_anlas} onChange={(event) => update('allow_purchased_anlas', event.target.checked)} aria-label="允许使用付费购入点数" /><span /></label></div><div className="field inline"><label htmlFor="purchased-limit">累计上限</label><input id="purchased-limit" type="number" min="0" max="1000000000" step="1" value={policy.purchased_anlas_limit} onChange={(event) => update('purchased_anlas_limit', Number(event.target.value))} /></div></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>Opus 配额</strong><small>此密钥可用的免费生成次数</small></div><label className="switch"><input type="checkbox" checked={policy.allow_opus} onChange={(event) => update('allow_opus', event.target.checked)} aria-label="允许使用 Opus 配额" /><span /></label></div><div className="field inline"><label htmlFor="opus-limit">累计上限</label><input id="opus-limit" type="number" min="0" max="10000000" step="1" value={policy.opus_limit_images} onChange={(event) => update('opus_limit_images', Number(event.target.value))} /></div></div>
+    <div className="policy-row"><div className="policy-row-top"><div><strong>订阅点数</strong><small>订阅获得的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_fixed_anlas} onChange={(event) => update('allow_fixed_anlas', event.target.checked)} aria-label="允许使用订阅点数" /><span /></label></div><div className="field inline"><label htmlFor="fixed-limit">累计上限（-1 为不限）</label><input id="fixed-limit" type="number" min="-1" max="1000000000" step="1" value={policy.fixed_anlas_limit} onChange={(event) => update('fixed_anlas_limit', Number(event.target.value))} /></div></div>
+    <div className="policy-row"><div className="policy-row-top"><div><strong>付费购入点数</strong><small>另行购买的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_purchased_anlas} onChange={(event) => update('allow_purchased_anlas', event.target.checked)} aria-label="允许使用付费购入点数" /><span /></label></div><div className="field inline"><label htmlFor="purchased-limit">累计上限（-1 为不限）</label><input id="purchased-limit" type="number" min="-1" max="1000000000" step="1" value={policy.purchased_anlas_limit} onChange={(event) => update('purchased_anlas_limit', Number(event.target.value))} /></div></div>
+    <div className="policy-row"><div className="policy-row-top"><div><strong>Opus 配额</strong><small>此密钥可用的免费生成次数</small></div><label className="switch"><input type="checkbox" checked={policy.allow_opus} onChange={(event) => update('allow_opus', event.target.checked)} aria-label="允许使用 Opus 配额" /><span /></label></div><div className="segmented policy-segmented" role="group" aria-label="Opus 限制方式"><button type="button" aria-pressed={policy.opus_limit_mode === 'images'} className={policy.opus_limit_mode === 'images' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'images')}>按次数</button><button type="button" aria-pressed={policy.opus_limit_mode === 'percent'} className={policy.opus_limit_mode === 'percent' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'percent')}>按满额比例</button></div>{policy.opus_limit_mode === 'images' ? <div className="field inline"><label htmlFor="opus-limit">累计上限（-1 为不限）</label><input id="opus-limit" type="number" min="-1" max="10000000" step="1" value={policy.opus_limit_images} onChange={(event) => update('opus_limit_images', Number(event.target.value))} /></div> : <div className="field inline"><label htmlFor="opus-percent">满额比例（约 {fmt(Math.floor(policy.opus_limit_percent * 1730 / 100))} 次）</label><input id="opus-percent" type="number" min="0" max="100" step="0.1" value={policy.opus_limit_percent} onChange={(event) => update('opus_limit_percent', Number(event.target.value))} /></div>}</div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>单次多图</strong><small>{multiImageAvailable ? '允许一次生成 2–4 张；全部消耗点数，不使用 Opus 配额' : '全局功能已关闭；请先在配置页开启'}</small></div><label className="switch"><input type="checkbox" checked={policy.allow_multi_image} disabled={!multiImageAvailable} onChange={(event) => update('allow_multi_image', event.target.checked)} aria-label="允许此密钥单次多图" /><span /></label></div></div>
     {error && <div className="form-error" role="alert">{error}</div>}
     <div className="modal-actions"><Button label="取消" variant="secondary" onClick={onClose} /><Button label={existing ? '保存更改' : '签发密钥'} variant="primary" type="submit" isLoading={busy} /></div>
@@ -310,6 +313,13 @@ export function App() {
     await load(adminKey)
   })
 
+  const rotate = (key: ClientKey) => mutate(async () => {
+    const result = await api.rotateKey(adminKey, key.id)
+    setDialog({ type: 'reveal', key: result.key, name: result.client.name })
+    setCopied(false)
+    await load(adminKey)
+  })
+
   const reconcile = (key: ClientKey, charged: number, opus: number) => mutate(async () => {
     await api.reconcile(adminKey, key.id, charged, opus)
     setDialog(null)
@@ -325,15 +335,16 @@ export function App() {
       <main className="content">
         {error && <div className="inline-alert page-alert" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={16} /></button></div>}
         {view === 'overview' && <Overview keys={keys} quota={quota} quotaError={quotaError} onRefreshQuota={() => void refreshQuota()} refreshingQuota={refreshingQuota} setView={setView} onCreate={() => setDialog({ type: 'create' })} />}
-        {view === 'keys' && <KeysPage keys={keys} onCreate={() => setDialog({ type: 'create' })} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} />}
+        {view === 'keys' && <KeysPage keys={keys} onCreate={() => setDialog({ type: 'create' })} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} onReveal={(key) => { if (key.key) { setCopied(false); setDialog({ type: 'reveal', key: key.key, name: key.name }) } }} onRotate={(key) => setDialog({ type: 'rotate', key })} />}
         {view === 'usage' && <UsagePage keys={keys} />}
         {view === 'settings' && <SettingsPage settings={settings} busy={busy} onChange={(enabled) => void changeMultiImage(enabled)} />}
       </main>
     </div>
     {(dialog?.type === 'create' || dialog?.type === 'edit') && <Modal title={dialog.type === 'create' ? '签发密钥' : `编辑 ${dialog.key.name}`} onClose={() => setDialog(null)}><KeyForm existing={dialog.type === 'edit' ? dialog.key : undefined} multiImageAvailable={settings?.allow_multi_image ?? false} busy={busy} error={error} onSave={savePolicy} onClose={() => setDialog(null)} /></Modal>}
     {dialog?.type === 'revoke' && <Modal title="撤销密钥" onClose={() => setDialog(null)}><div className="modal-body"><p>确认撤销 <strong>{dialog.key.name}</strong>？该密钥将立即无法访问代理。</p><div className="modal-actions"><Button label="取消" variant="secondary" onClick={() => setDialog(null)} /><Button label="撤销密钥" variant="destructive" isLoading={busy} onClick={() => void revoke(dialog.key)} /></div></div></Modal>}
+    {dialog?.type === 'rotate' && <Modal title="轮换密钥" onClose={() => setDialog(null)}><div className="modal-body"><p>确认轮换 <strong>{dialog.key.name}</strong>？旧密钥会立即失效；额度和累计用量保留。</p><div className="modal-actions"><Button label="取消" variant="secondary" onClick={() => setDialog(null)} /><Button label="轮换密钥" variant="primary" isLoading={busy} onClick={() => void rotate(dialog.key)} /></div></div></Modal>}
     {dialog?.type === 'reconcile' && <ReconcileModal item={dialog.key} busy={busy} error={error} onClose={() => setDialog(null)} onSave={(charged, opus) => reconcile(dialog.key, charged, opus)} />}
-    {dialog?.type === 'reveal' && <Modal title="密钥已签发" onClose={() => setDialog(null)}><div className="modal-body"><p><strong>{dialog.name}</strong> 的客户端密钥</p><div className="secret-line"><code>{dialog.key}</code><IconAction label={copied ? '已复制' : '复制密钥'} icon={copied ? <Check size={17} /> : <Copy size={17} />} onClick={() => { void navigator.clipboard.writeText(dialog.key).then(() => setCopied(true)).catch(() => setError('复制失败，请手动选择密钥。')) }} /></div><p className="modal-note">密钥只显示这一次。</p><div className="modal-actions"><Button label="完成" variant="primary" onClick={() => setDialog(null)} /></div></div></Modal>}
+    {dialog?.type === 'reveal' && <Modal title="客户端密钥" onClose={() => setDialog(null)}><div className="modal-body"><p><strong>{dialog.name}</strong> 的客户端密钥</p><div className="secret-line"><code>{dialog.key}</code><IconAction label={copied ? '已复制' : '复制密钥'} icon={copied ? <Check size={17} /> : <Copy size={17} />} onClick={() => { void navigator.clipboard.writeText(dialog.key).then(() => setCopied(true)).catch(() => setError('复制失败，请手动选择密钥。')) }} /></div><div className="modal-actions"><Button label="完成" variant="primary" onClick={() => setDialog(null)} /></div></div></Modal>}
   </div>
 }
 

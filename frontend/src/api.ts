@@ -13,7 +13,10 @@ export interface ClientKey {
   purchased_anlas_remaining: number
   allow_opus: boolean
   allow_multi_image: boolean
+  opus_limit_mode: 'images' | 'percent'
+  opus_limit_percent: number
   opus_limit_images: number
+  opus_effective_limit_images: number
   opus_used_images: number
   opus_pending_images: number
   opus_remaining_images: number
@@ -22,6 +25,7 @@ export interface ClientKey {
   pending_anlas: number
   remaining_anlas: number
   revoked: boolean
+  key?: string
 }
 
 export interface AdminQuota {
@@ -42,6 +46,9 @@ export interface AdminQuota {
   projected_opus_percent: number
   snapshot_age_seconds: number
   queue_length: number
+  unlimited_fixed_keys: number
+  unlimited_purchased_keys: number
+  unlimited_opus_keys: number
 }
 
 export interface KeyPolicy {
@@ -52,6 +59,8 @@ export interface KeyPolicy {
   purchased_anlas_limit: number
   allow_opus: boolean
   allow_multi_image: boolean
+  opus_limit_mode: 'images' | 'percent'
+  opus_limit_percent: number
   opus_limit_images: number
 }
 
@@ -104,6 +113,7 @@ export const api = {
   createKey: (key: string, policy: KeyPolicy) => request<{ key: string; client: ClientKey }>(key, '/admin/keys', 'POST', policy),
   updateKey: (key: string, id: string, policy: KeyPolicy) => request<ClientKey>(key, `/admin/keys/${id}`, 'PUT', policy),
   revokeKey: (key: string, id: string) => request<void>(key, `/admin/keys/${id}`, 'DELETE'),
+  rotateKey: (key: string, id: string) => request<{ key: string; client: ClientKey }>(key, `/admin/keys/${id}/rotate`, 'POST'),
   reconcile: (key: string, id: string, charged: number, opus: number) => request<ClientKey>(key, `/admin/keys/${id}/reconcile`, 'POST', { charged_anlas: charged, opus_charged_images: opus }),
 }
 
