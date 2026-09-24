@@ -55,6 +55,24 @@ func main() {
 		logger.Error("invalid proxy configuration", "error", err)
 		os.Exit(1)
 	}
+	var appHandler http.Handler = handler
+	frontendDir := os.Getenv("PROXY_FRONTEND_DIR")
+	if frontendDir == "" {
+		if _, err := os.Stat("frontend/dist"); err == nil {
+			frontendDir = "frontend/dist"
+		} else if !errors.Is(err, os.ErrNotExist) {
+			logger.Error("cannot inspect frontend build", "error", err)
+			os.Exit(1)
+		}
+	}
+	if frontendDir != "" {
+		appHandler, err = mountFrontend(appHandler, frontendDir)
+		if err != nil {
+			logger.Error("invalid frontend build", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("serving frontend", "directory", frontendDir)
+	}
 
 	addr := os.Getenv("PROXY_LISTEN_ADDR")
 	if addr == "" {
@@ -62,7 +80,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           appHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		// Image generation can take several minutes; the upstream transport
