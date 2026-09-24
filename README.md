@@ -23,10 +23,10 @@ docker run -d --name novelai-api-proxy --restart unless-stopped \
   -e PROXY_STATE_PATH=/data/keys.json \
   -v novelai-proxy-data:/data \
   -p 127.0.0.1:8787:8787 \
-  shenghuo2/novelai-api-proxy:v0.1.1
+  shenghuo2/novelai-api-proxy:v0.1.2
 ```
 
-镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.1`，支持 `linux/amd64` 和 `linux/arm64`。该已发布标签早于本仓库的图片归档实现；使用归档功能应先从当前源码构建镜像。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
+镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.2`，支持 `linux/amd64` 和 `linux/arm64`；此版本包含图片归档及 SQLite 数据结构兼容升级。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
 
 构建完成后，管理面板位于 `http://127.0.0.1:8787/`，API 使用同一地址。Compose 默认仅映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 SQLite 账本、持久化任务的请求体和结果，以及开启归档后生成的原图和缩略图。需要局域网访问时，在 `.env` 中设置 `PROXY_BIND_ADDR` 为主机的局域网 IP，即可从其他设备访问同一个端口。
 
