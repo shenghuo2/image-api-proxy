@@ -36,6 +36,7 @@ type clientKey struct {
 	OpusLimitPercent float64 `json:"opus_limit_percent,omitempty"`
 	OpusUsed         int64   `json:"opus_used_images"`
 	OpusPending      int64   `json:"opus_pending_images"`
+	QueueLimit       *int    `json:"queue_limit,omitempty"`
 	Revoked          bool    `json:"revoked"`
 	Allocated        int64   `json:"allocated,omitempty"`
 	Spent            int64   `json:"spent,omitempty"`
@@ -231,6 +232,13 @@ func opusEffectiveLimit(k clientKey) int64 {
 		return int64(math.Floor(k.OpusLimitPercent * opusFullImages / 100))
 	}
 	return k.OpusLimit
+}
+
+func keyQueueLimit(k clientKey) int {
+	if k.QueueLimit == nil {
+		return -1
+	}
+	return *k.QueueLimit
 }
 
 func displayRemaining(value int64) int64 {

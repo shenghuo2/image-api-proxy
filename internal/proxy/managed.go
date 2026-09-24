@@ -16,6 +16,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,12 +31,6 @@ type ManagedConfig struct {
 	Transport     http.RoundTripper
 }
 
-type ticket struct {
-	ctx   context.Context
-	ready chan struct{}
-	done  chan struct{}
-}
-
 type ManagedHandler struct {
 	adminHash        [sha256.Size]byte
 	adminOrigin      string
@@ -43,7 +38,10 @@ type ManagedHandler struct {
 	accounts         *accountStore
 	vault            keyVault
 	settings         *settingsStore
-	queue            chan ticket
+	queueMu          sync.Mutex
+	queueSize        int
+	waiting          []*ticket
+	active           *ticket
 	client           *http.Client
 	imageURL         *url.URL
 	image            *httputil.ReverseProxy
@@ -110,7 +108,7 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		accounts:         accounts,
 		vault:            vault,
 		settings:         settings,
-		queue:            make(chan ticket, cfg.QueueSize),
+		queueSize:        cfg.QueueSize,
 		client:           &http.Client{Transport: transport, Timeout: 25 * time.Second},
 		imageURL:         imageURL,
 		image:            newReverseProxy(imageURL, "/image", transport),
@@ -118,38 +116,7 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		quotas:           make(map[string]*quotaSnapshot),
 		lastQuotaAttempt: make(map[string]time.Time),
 	}
-	go h.runQueue()
 	return h, nil
-}
-
-func (h *ManagedHandler) runQueue() {
-	for t := range h.queue {
-		if t.ctx.Err() != nil {
-			close(t.ready)
-			continue
-		}
-		close(t.ready)
-		<-t.done
-	}
-}
-
-func (h *ManagedHandler) enter(ctx context.Context) (func(), error) {
-	t := ticket{ctx: ctx, ready: make(chan struct{}), done: make(chan struct{})}
-	select {
-	case h.queue <- t:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-		return nil, errors.New("queue full")
-	}
-	select {
-	case <-t.ready:
-		return func() { close(t.done) }, nil
-	case <-ctx.Done():
-		// If admission raced with cancellation, the worker still needs a release.
-		go func() { <-t.ready; close(t.done) }()
-		return nil, ctx.Err()
-	}
 }
 
 func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +384,8 @@ func (h *ManagedHandler) serveClientQuota(w http.ResponseWriter, r *http.Request
 	for _, latest := range h.store.snapshot() {
 		if latest.ID == key.ID && latest.Hash == current.Hash && !latest.Revoked {
 			view := viewKey(latest)
-			view.QueueLength = len(h.queue)
+			view.QueueLength = h.queueLength()
+			view.KeyQueueLength = h.keyQueueLength(key.ID)
 			jsonReply(w, http.StatusOK, view)
 			return
 		}
@@ -426,7 +394,7 @@ func (h *ManagedHandler) serveClientQuota(w http.ResponseWriter, r *http.Request
 }
 
 func (h *ManagedHandler) serveSubscription(w http.ResponseWriter, r *http.Request, key clientKey) {
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), key.ID, r.Method+" "+r.URL.Path, keyQueueLimit(key))
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -465,7 +433,7 @@ func (h *ManagedHandler) queueError(w http.ResponseWriter, err error) {
 		return
 	}
 	w.Header().Set("Retry-After", "2")
-	http.Error(w, "queue full", http.StatusTooManyRequests)
+	http.Error(w, err.Error(), http.StatusTooManyRequests)
 }
 
 func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key clientKey, selected *route) {
@@ -473,7 +441,7 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), key.ID, r.Method+" "+r.URL.Path, keyQueueLimit(key))
 	if err != nil {
 		h.queueError(w, err)
 		return

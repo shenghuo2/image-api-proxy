@@ -20,6 +20,7 @@ type keyPolicyInput struct {
 	OpusLimit        *int64   `json:"opus_limit_images"`
 	OpusLimitMode    *string  `json:"opus_limit_mode"`
 	OpusLimitPercent *float64 `json:"opus_limit_percent"`
+	QueueLimit       *int     `json:"queue_limit"`
 }
 
 func applyPolicy(k *clientKey, input keyPolicyInput) error {
@@ -57,6 +58,9 @@ func applyPolicy(k *clientKey, input keyPolicyInput) error {
 	if input.AllowMultiImage != nil {
 		k.AllowMultiImage = *input.AllowMultiImage
 	}
+	if input.QueueLimit != nil {
+		k.QueueLimit = input.QueueLimit
+	}
 	if k.FixedLimit < -1 || k.FixedLimit > 1e9 || k.PurchasedLimit < -1 || k.PurchasedLimit > 1e9 || k.OpusLimit < -1 || k.OpusLimit > 1e7 {
 		return errors.New("invalid quota limit")
 	}
@@ -65,6 +69,9 @@ func applyPolicy(k *clientKey, input keyPolicyInput) error {
 	}
 	if math.IsNaN(k.OpusLimitPercent) || math.IsInf(k.OpusLimitPercent, 0) || k.OpusLimitPercent < 0 || k.OpusLimitPercent > 100 {
 		return errors.New("invalid Opus limit percent")
+	}
+	if keyQueueLimit(*k) < -1 || keyQueueLimit(*k) > 10000 {
+		return errors.New("queue_limit must be between -1 and 10000")
 	}
 	return nil
 }

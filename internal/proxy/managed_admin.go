@@ -33,11 +33,13 @@ type publicKey struct {
 	OpusUsed           int64   `json:"opus_used_images"`
 	OpusPending        int64   `json:"opus_pending_images"`
 	OpusRemaining      int64   `json:"opus_remaining_images"`
+	QueueLimit         int     `json:"queue_limit"`
 	AllocatedAnlas     int64   `json:"allocated_anlas"`
 	SpentAnlas         int64   `json:"spent_anlas"`
 	PendingAnlas       int64   `json:"pending_anlas"`
 	RemainingAnlas     int64   `json:"remaining_anlas"`
-	QueueLength        int     `json:"queue_length,omitempty"`
+	QueueLength        int     `json:"queue_length"`
+	KeyQueueLength     int     `json:"key_queue_length"`
 	Revoked            bool    `json:"revoked"`
 	Key                string  `json:"key,omitempty"`
 }
@@ -53,6 +55,7 @@ func viewKey(k clientKey) publicKey {
 		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
 		OpusLimitMode: opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
 		OpusPending: k.OpusPending, OpusRemaining: displayRemaining(opusRemaining(k)),
+		QueueLimit:     keyQueueLimit(k),
 		AllocatedAnlas: allocatedAnlas(k),
 		SpentAnlas:     k.FixedSpent + k.PurchasedSpent,
 		PendingAnlas:   k.FixedPending + k.PurchasedPending,
@@ -123,6 +126,8 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/quota" && r.Method == http.MethodGet:
 		h.serveAdminQuota(w, r, false)
+	case r.URL.Path == "/admin/queue" && r.Method == http.MethodGet:
+		h.serveAdminQueue(w, r)
 	case r.URL.Path == "/admin/quota/refresh" && r.Method == http.MethodPost:
 		h.serveAdminQuota(w, r, true)
 	case r.URL.Path == "/admin/keys" && r.Method == http.MethodGet:
@@ -180,7 +185,7 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request, force bool) {
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -260,7 +265,7 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 		"active":                      q.Official.Active, "isGracePeriod": q.Official.Grace, "tier": q.Official.Tier,
 		"usage": projectedUsage(q, -1), "projected_opus_percent": q.projectedOpusPercent(),
 		"snapshot_age_seconds": int64(time.Since(q.Refreshed).Seconds()),
-		"queue_length":         len(h.queue),
+		"queue_length":         h.queueLength(),
 	})
 }
 
@@ -281,7 +286,7 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -338,7 +343,7 @@ func (h *ManagedHandler) rotateKey(w http.ResponseWriter, r *http.Request, id st
 		http.NotFound(w, r)
 		return
 	}
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -374,7 +379,7 @@ func (h *ManagedHandler) rotateKey(w http.ResponseWriter, r *http.Request, id st
 }
 
 func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id string, input keyPolicyInput) {
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -431,7 +436,7 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 }
 
 func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id string, charged int64, opusCharged *int64) {
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return

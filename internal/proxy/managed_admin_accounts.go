@@ -143,7 +143,7 @@ func (h *ManagedHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid account", http.StatusBadRequest)
 		return
 	}
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -191,7 +191,7 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "invalid account", http.StatusBadRequest)
 		return
 	}
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -239,7 +239,7 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 }
 
 func (h *ManagedHandler) deleteAccount(w http.ResponseWriter, r *http.Request, id string) {
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return
@@ -277,7 +277,7 @@ func (h *ManagedHandler) deleteAccount(w http.ResponseWriter, r *http.Request, i
 }
 
 func (h *ManagedHandler) serveAccountQuota(w http.ResponseWriter, r *http.Request, id string, force bool) {
-	release, err := h.enter(r.Context())
+	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
 		return

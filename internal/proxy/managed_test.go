@@ -494,10 +494,10 @@ func TestManagedQueueSerializesJobs(t *testing.T) {
 	}
 	go send()
 	deadline := time.Now().Add(3 * time.Second)
-	for len(h.queue) != 1 && time.Now().Before(deadline) {
+	for h.queueLength() != 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if len(h.queue) != 1 {
+	if h.queueLength() != 1 {
 		t.Fatal("second job was not queued")
 	}
 	third := managedRequest(t, "POST", server.URL+"/ai/generate-image", clientKey, job)
