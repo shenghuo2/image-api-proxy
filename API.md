@@ -64,6 +64,7 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `GET /admin/accounts/{id}/quota` | 查询单账号缓存额度及有限固定分配额 |
 | `POST /admin/accounts/{id}/quota/refresh` | 请求刷新单账号额度；受最短 30 秒刷新间隔限制 |
 | `GET /admin/keys` | 列出每把 key 的权限、额度与状态；可解密的新 key 含 `key` 字段 |
+| `GET /admin/queue` | 读取当前执行请求、等待池顺序、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
 | `GET /admin/settings` | 查看全局功能配置，默认 `allow_multi_image: false` |
 | `PUT /admin/settings` | 提交 `{"allow_multi_image":true}`，允许为 key 分配多图权限；关闭后立即阻断所有多图请求 |
 | `POST /admin/keys` | 设置名称、账号策略与权限，签发 key；未指定的权限默认关闭，账号默认轮询池 |
@@ -75,6 +76,8 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 `allow_fixed_anlas`、`allow_purchased_anlas` 和 `allow_opus` 是独立开关，分别对应订阅点数、付费购入点数和 Opus 配额。对应的 `fixed_anlas_limit`、`purchased_anlas_limit` 和 `opus_limit_images` 是这把 key 的**累计上限**；提高上限即可追加可用额。三种上限均可设为 `-1`，表示不设本地累计上限，实际请求仍受预计官方余额和权限约束。Opus 可将 `opus_limit_mode` 设为 `percent` 并使用 `opus_limit_percent`（0–100），以估算满额 1730 次折算累计上限：10% 为 173 次，向下取整；`images` 模式使用 `opus_limit_images`。`opus_effective_limit_images` 返回当前生效的折算次数。请求消耗选中账号的官方 Opus 配额。关闭权限会立刻使该项剩余可用额变为 0，但不清除已用记录。只有 Opus 权限、没有 Anlas 权限的 key 可以使用符合免费条件且无付费附加项的生成请求；当官方会用 Opus 免费生成时，没有 Opus 权限的 key 会被拒绝，即使它有 Anlas 预算，因为代理无法要求 NovelAI 改扣点数。
 
 `allow_multi_image` 是逐 key 的单次多图权限。必须先打开全局同名配置才能为新 key 开启；旧账本及新 key 默认关闭。关闭全局配置时已有 key 的授权记录保留，但多图请求立即不可用。
+
+`queue_limit` 设置每把 key 同时占用的**等待位置数**，不计正在执行的请求。`-1` 表示不设逐 key 上限（旧 key 和新 key 默认值），`0` 表示该 key 只能在队列空闲时立即执行，正整数最多为 10000。修改上限只影响后续入队，不会踢出已经等待的请求。所有 key 仍受全局 `PROXY_QUEUE_SIZE` 限制。客户端 `/quota` 返回 `queue_limit`、全局 `queue_length` 和该 key 的 `key_queue_length`。
 
 `account_id` 选择上游账号。新 key 默认 `pool`，每次生成从已启用账号依次轮询，跳过额度不足或暂不可用的账号；也可指定 `GET /admin/accounts` 返回的账号 ID 进行固定绑定。停用账号后，池不会再选它，固定绑定的 key 在重新启用前不可生成。旧账本中没有 `account_id` 的 key 继续绑定 `default` 账号；已有用量的 key 不允许更换账号策略。所有账号共用同一条 FIFO 队列，不会跨账号并发转发。账号 Token 在服务端加密保存；更换管理员密钥后需重新录入无法解密的账号 Token。
 
@@ -93,7 +96,9 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 
 ## 排队与结算
 
-所有触达上游的调用按入队顺序逐个执行。等待中的客户端断开后会跳过；生成流在整个响应结束后才释放队列。`PROXY_QUEUE_SIZE` 默认容纳 64 个等待请求，满载时返回 429 和 `Retry-After: 2`。请求体上限 64 MiB；轮到请求时，服务在内存中暂存完整请求体并读取 JSON 请求描述用于费用预留，不写磁盘。
+所有触达上游的调用按入队顺序逐个执行。等待中的客户端断开后会立即移出等待池；生成流在整个响应结束后才释放队列。`PROXY_QUEUE_SIZE` 默认容纳 64 个等待请求，达到全局或逐 key 上限时返回 429 和 `Retry-After: 2`，响应体分别为 `queue full` 或 `key queue full`。排队时不预扣额度，轮到请求时再检查权限与剩余额度；前面的请求耗尽额度后，后续请求可能被拒绝。请求体上限 64 MiB；轮到请求时，服务在内存中暂存完整请求体并读取 JSON 请求描述用于费用预留，不写磁盘。
+
+`GET /admin/queue` 返回 `capacity`、`active` 和按位置排序的 `waiting`。每项只包含 key ID、备注名称、请求路由与排队/开始时间，不包含 Token、提示词或图片。管理面板的“任务队列”页会在可见时每 5 秒读取一次这个本地快照；该请求不进入生成队列，也不会刷新官方额度。队列在服务进程重启后清空。
 
 每个账号的官方订阅独立缓存 5 分钟，可用 `PROXY_QUOTA_TTL` 设为 1 分钟至 1 小时。缓存期内各请求只使用对应账号的本地预计余额；单账号刷新失败后 30 秒内不会反复请求官方，池模式会继续尝试其他可用账号。管理员可查看 `snapshot_age_seconds`，或调用刷新接口；因此 `GET /admin/quota` 和 `GET /user/subscription` 不保证实时反映官方变化。
 
