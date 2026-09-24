@@ -58,10 +58,46 @@ PROXY_ADMIN_KEY='<管理员密钥>' PROXY_NAI_TOKEN='<NovelAI Token>' \
 
 前端源码位于 [`frontend/`](frontend/)，使用 React、Vite 和 Astryx Design System。默认部署时由 Go 服务直接提供构建产物；前端开发与独立部署步骤见 [frontend/README.md](frontend/README.md)。面板可管理账号，签发、查看、轮换、调整及撤销 key，核对待处理额度，并按 key 查看累计估算用量。各类上限可设为 `-1`（不设本地累计上限）；Opus 也可按满额百分比分配。每把 key 可设置最多等待请求数，任务队列页展示当前执行项和等待池。配置页可启用单次多图的全局权限，再逐 key 授权；默认关闭。面板不自动轮询官方额度。
 
-图片归档默认关闭。开启后，普通及流式成功生成会在后台提取最终原始 PNG，生成不超过 100 KiB 的 JPEG 缩略图；单次多图按一次生成分组。每把 key 默认参与归档，可单独关闭。图库支持按 key、IP、时间筛选、预览、下载和删除，归档失败计数与最近错误也会显示。默认保留 30 天、总容量 20 GiB；保留天数为 `-1` 时不限日期，但仍受容量上限约束。原图和缩略图仅通过管理员认证接口访问；目录与文件权限分别为 0700 和 0600。归档解析或写盘失败不会改变生成响应。
+图片归档默认关闭。在面板“配置”页开启后，普通及流式图像生成、`/image` 别名和持久化任务的成功结果都会进入后台归档；流式请求只保存最终成图帧。归档保留每张原始 PNG，并生成不超过 100 KiB 的 JPEG 缩略图；单次多图按一次生成分组。每把 key 默认参与归档，可在密钥编辑页单独关闭，关闭只影响后续生成。“生成图库”支持按 key、IP、时间筛选、预览、下载和删除，显示待处理数、失败次数与最近错误。默认保留 30 天、总容量 20 GiB；保留天数为 `-1` 时不限日期，但仍受容量上限约束。原图和缩略图仅通过管理员认证接口访问；目录与文件权限分别为 0700 和 0600。归档解析或写盘失败不会改变生成响应。配置字段和接口示例见 [API.md](API.md#图片归档)。
+
 归档为防止异常上游响应耗尽内存，对单张 PNG 设 32 MiB、完整响应设 128 MiB 的解析上限；超限时只跳过归档，不影响客户端收到的原始响应。
 
-调用者 IP 默认来自连接地址，直连时忽略 `X-Forwarded-For`。Compose 仅在 `PROXY_BIND_ADDR=127.0.0.1` 时自动信任本机回环及 Docker 默认网桥网关，以便本机 Nginx 独占入口时识别真实地址；局域网绑定时不会自动信任。其他代理可用 `PROXY_TRUSTED_PROXY_CIDRS` 配置逗号分隔的 CIDR，例如 `10.0.0.0/8,172.20.0.0/16`。只应填入实际由你控制的代理地址范围。
+## 反向代理与调用者 IP
+
+图库记录提交生成请求时的调用者 IP；持久化任务也使用提交时的地址，不使用后台执行地址。默认以连接地址为准，忽略客户端自行提交的 `X-Forwarded-For`。当 Nginx 与本服务在同一台宿主机、服务仅绑定宿主机 `127.0.0.1` 时，设置 `PROXY_BIND_ADDR=127.0.0.1`；代理会自动信任本机回环和 Docker 默认网桥网关。局域网绑定时不会自动信任转发头。
+
+若 Nginx 在另一台主机，且代理通过宿主机的局域网地址提供服务，可按下面的示例配置。把地址换成代理宿主机实际可达的地址；Nginx 应独占代理的外部入口。如果 Nginx 前面还有其他代理，先在 Nginx 上配置其可信来源，确保 `$remote_addr` 是最终调用者地址。
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name nai.example.com;
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://192.168.123.154:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+代理宿主机的 Compose `.env` 示例：
+
+```dotenv
+PROXY_BIND_ADDR=192.168.123.154
+PROXY_TRUSTED_PROXY_CIDRS=172.17.0.1/32
+```
+
+`172.17.0.1` 仅是示例：Docker 端口映射可能让容器把所有外部连接都看成网桥网关。应以容器实际看到的连接地址为准，使用精确的 `/32`，并重建容器使环境变量生效。**只允许远端 Nginx 主机访问代理的 8787 端口**，否则直连者也能伪造转发头。Docker 发布端口的流量可能绕过普通宿主机 `INPUT` 规则，需要在网络边界限制来源；使用 Docker iptables 后端时也可在 `DOCKER-USER` 链限制。Nginx 用 `$remote_addr` 覆盖传入的 `X-Forwarded-For`，不要将客户端原有的该请求头原样透传。其他部署拓扑可通过 `PROXY_TRUSTED_PROXY_CIDRS` 配置实际受控代理的精确 CIDR；多个 CIDR 以逗号分隔。
 
 ## 开发验证
 

@@ -40,7 +40,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' 
 
 响应图片、ZIP、Vibe 向量和流式帧不重新编码。上游状态码与响应体直接返回给客户端；代理自身的鉴权、队列、参数和配额错误由代理返回。
 
-管理员可选择开启生成图片归档。归档只在后台读取成功成图，不改变上述响应字节或流式传输；关闭某把 key 的归档只影响后续生成。归档文件只能通过管理员接口查看，客户端 key 无法读取图库。
+管理员可选择开启生成图片归档。普通与流式生成、`/image` 别名及持久化任务的成功结果均可归档；流式请求只提取最终成图帧。归档在后台处理，不改变上述响应字节或流式传输；详见[图片归档](#图片归档)。
 
 ## 持久化任务接口
 
@@ -98,8 +98,6 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 
 `allow_multi_image` 是逐 key 的单次多图权限。必须先打开全局同名配置才能为新 key 开启；旧账本及新 key 默认关闭。关闭全局配置时已有 key 的授权记录保留，但多图请求立即不可用。
 
-归档默认关闭；开启 `archive_enabled` 后，每把 key 的同名字段默认开启，可逐把关闭。`archive_retention_days` 默认为 30，`-1` 表示不按日期删除；`archive_max_bytes` 默认为 20 GiB，按最旧图片优先淘汰，至少 1 MiB。每张原图按生成完成时间、提交请求时的 IP、当时的 key 名称和 ID 记录；多图共用 `group_id`。图库图片必须用管理员 Bearer 头获取，不能把密钥拼到图片 URL。归档错误不会改变客户端生成响应，失败统计在 `/admin/images/stats` 中查看。
-
 `queue_limit` 设置每把 key 同时占用的**等待位置数**，不计正在执行的请求。`-1` 表示不设逐 key 上限（旧 key 和新 key 默认值），`0` 表示该 key 只能在队列空闲时立即执行，正整数最多为 10000。修改上限只影响后续入队，不会踢出已经等待的请求。所有 key 仍受全局 `PROXY_QUEUE_SIZE` 限制。客户端 `/quota` 返回 `queue_limit`、全局 `queue_length` 和该 key 的 `key_queue_length`。
 
 `account_id` 选择上游账号。新 key 默认 `pool`，每次生成从已启用账号依次轮询，跳过额度不足或暂不可用的账号；也可指定 `GET /admin/accounts` 返回的账号 ID 进行固定绑定。停用账号后，池不会再选它，固定绑定的 key 在重新启用前不可生成。旧账本中没有 `account_id` 的 key 继续绑定 `default` 账号；已有用量的 key 不允许更换账号策略。所有账号共用同一条 FIFO 队列，不会跨账号并发转发。账号 Token 在服务端加密保存；更换管理员密钥后需重新录入无法解密的账号 Token。
@@ -116,6 +114,42 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 `GET /quota` 返回该 key 的账号策略、三组权限、累计上限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。无限本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定 key 使用所属账号的预计余额，池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
 
 管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示；现有账本不提供按日历史曲线。
+
+## 图片归档
+
+全局归档默认关闭，可在管理面板“配置”页开启，也可通过管理员接口更新。`archive_retention_days` 默认 30，可设为 `-1` 表示不按日期清理，最大 36500；`archive_max_bytes` 默认 20 GiB，可设为 1 MiB 至 1 TiB。总容量计算原图与缩略图，超限时从最旧图片开始淘汰；修改策略后后台会执行清理。关闭全局或某把 key 的归档，只影响之后的生成，已有图片仍按保留策略管理。
+
+```bash
+curl -X PUT "$BASE/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"archive_enabled":true,"archive_retention_days":30,"archive_max_bytes":21474836480}'
+
+curl -X PUT "$BASE/admin/keys/$KEY_ID" \
+  -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"archive_enabled":false}'
+```
+
+新旧 key 的 `archive_enabled` 默认均为 `true`，但只有全局归档开启时才会保存。每张成功生成的原始 PNG 单独保存，同时生成不超过 100 KiB 的 JPEG 缩略图；多图共用 `group_id`。记录包含 `created_at`（生成完成时间）、`ip`（提交时的调用者 IP）、`key_id`、当时的 `key_name` 和 `bytes`（原图加缩略图大小）。持久化任务取提交时的 IP，不取后台执行地址。流式请求只保存最终成图帧，解析或写盘失败不会改变原始生成响应。IP 转发配置见 [README.md](README.md#反向代理与调用者-ip)。
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_KEY" "$BASE/admin/images/stats"
+
+curl --get "$BASE/admin/images" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  --data-urlencode "key_id=$KEY_ID" \
+  --data-urlencode 'ip=198.51.100.7' \
+  --data-urlencode 'from=2026-09-01T00:00:00Z' \
+  --data-urlencode 'page=1'
+
+curl -H "Authorization: Bearer $ADMIN_KEY" \
+  "$BASE/admin/images/$IMAGE_ID/thumbnail" --output thumbnail.jpg
+curl -H "Authorization: Bearer $ADMIN_KEY" \
+  "$BASE/admin/images/$IMAGE_ID/original" --output original.png
+curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
+  "$BASE/admin/images/$IMAGE_ID"
+```
+
+列表还可用 `to` 筛选结束时间，`from` 和 `to` 都使用 RFC 3339 时间；`ip` 为精确匹配。列表按完成时间倒序，固定每页 24 张，返回 `items`、`total`、`page` 和 `page_size`；每项的 `group_size` 表示同组图片总数。统计接口返回 `count`、`bytes`、`pending`、`failures` 和 `last_error`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
 
 ## 排队与结算
 
