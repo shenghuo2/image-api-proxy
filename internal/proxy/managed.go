@@ -39,8 +39,8 @@ type ticket struct {
 type ManagedHandler struct {
 	adminHash        [sha256.Size]byte
 	adminOrigin      string
-	token            string
 	store            *keyStore
+	accounts         *accountStore
 	vault            keyVault
 	settings         *settingsStore
 	queue            chan ticket
@@ -48,8 +48,9 @@ type ManagedHandler struct {
 	imageURL         *url.URL
 	image            *httputil.ReverseProxy
 	quotaTTL         time.Duration
-	quota            *quotaSnapshot
-	lastQuotaAttempt time.Time
+	quotas           map[string]*quotaSnapshot
+	lastQuotaAttempt map[string]time.Time
+	poolCursor       int
 }
 
 func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
@@ -89,6 +90,11 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if err != nil {
 		return nil, err
 	}
+	vault := newKeyVault(cfg.AdminKey)
+	accounts, err := openAccountStore(cfg.StatePath, cfg.NovelAIToken, vault)
+	if err != nil {
+		return nil, err
+	}
 	transport := cfg.Transport
 	if transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
@@ -98,17 +104,19 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		transport = t
 	}
 	h := &ManagedHandler{
-		adminHash:   sha256.Sum256([]byte(cfg.AdminKey)),
-		adminOrigin: cfg.AdminOrigin,
-		token:       cfg.NovelAIToken,
-		store:       store,
-		vault:       newKeyVault(cfg.AdminKey),
-		settings:    settings,
-		queue:       make(chan ticket, cfg.QueueSize),
-		client:      &http.Client{Transport: transport, Timeout: 25 * time.Second},
-		imageURL:    imageURL,
-		image:       newReverseProxy(imageURL, "/image", transport),
-		quotaTTL:    cfg.QuotaTTL,
+		adminHash:        sha256.Sum256([]byte(cfg.AdminKey)),
+		adminOrigin:      cfg.AdminOrigin,
+		store:            store,
+		accounts:         accounts,
+		vault:            vault,
+		settings:         settings,
+		queue:            make(chan ticket, cfg.QueueSize),
+		client:           &http.Client{Transport: transport, Timeout: 25 * time.Second},
+		imageURL:         imageURL,
+		image:            newReverseProxy(imageURL, "/image", transport),
+		quotaTTL:         cfg.QuotaTTL,
+		quotas:           make(map[string]*quotaSnapshot),
+		lastQuotaAttempt: make(map[string]time.Time),
 	}
 	go h.runQueue()
 	return h, nil
@@ -258,39 +266,103 @@ func (q *quotaSnapshot) projectedOpusPercent() float64 {
 }
 
 // currentQuota is called only while the FIFO worker owns the request.
-func (h *ManagedHandler) currentQuota(ctx context.Context, force bool) (*quotaSnapshot, error) {
+func (h *ManagedHandler) currentQuota(ctx context.Context, accountID string, force bool) (*quotaSnapshot, error) {
+	token, err := h.accountToken(accountID)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
-	if h.quota != nil && now.Sub(h.quota.Refreshed) < h.quotaTTL && !force {
-		return h.quota, nil
+	if q := h.quotas[accountID]; q != nil && now.Sub(q.Refreshed) < h.quotaTTL && !force {
+		return q, nil
 	}
 	refreshFloor := min(30*time.Second, h.quotaTTL)
-	if force && h.quota != nil && now.Sub(h.quota.Refreshed) < refreshFloor {
-		return h.quota, nil
+	if q := h.quotas[accountID]; force && q != nil && now.Sub(q.Refreshed) < refreshFloor {
+		return q, nil
 	}
-	if !h.lastQuotaAttempt.IsZero() && now.Sub(h.lastQuotaAttempt) < refreshFloor {
+	if attempt := h.lastQuotaAttempt[accountID]; !attempt.IsZero() && now.Sub(attempt) < refreshFloor {
 		return nil, errors.New("quota refresh backoff")
 	}
-	h.lastQuotaAttempt = now
-	quota, err := h.fetchQuota(ctx)
+	h.lastQuotaAttempt[accountID] = now
+	quota, err := h.fetchQuota(ctx, token)
 	if err != nil {
 		slog.Warn("upstream quota refresh failed", "error", err)
 		return nil, err
 	}
-	h.quota = &quotaSnapshot{Official: quota, Fixed: quota.Fixed, Purchased: quota.Purchased, Refreshed: time.Now()}
-	return h.quota, nil
+	h.quotas[accountID] = &quotaSnapshot{Official: quota, Fixed: quota.Fixed, Purchased: quota.Purchased, Refreshed: time.Now()}
+	return h.quotas[accountID], nil
 }
 
-func (h *ManagedHandler) fetchQuota(ctx context.Context) (upstreamQuota, error) {
-	if h.token == "" {
-		return upstreamQuota{}, errors.New("NovelAI token is not configured")
+func (h *ManagedHandler) accountToken(accountID string) (string, error) {
+	account, ok := h.accounts.find(accountID)
+	if !ok || account.Disabled {
+		return "", errors.New("upstream account unavailable")
 	}
+	return h.vault.open(account.TokenCiphertext)
+}
+
+func (h *ManagedHandler) accountCandidates(k clientKey) []upstreamAccount {
+	accounts := h.accounts.snapshot()
+	available := make([]upstreamAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if !account.Disabled && (keyAccountID(k) == poolAccountID || keyAccountID(k) == account.ID) {
+			available = append(available, account)
+		}
+	}
+	return available
+}
+
+// Pool views combine projected balances while the job itself uses one account.
+func (h *ManagedHandler) quotaForKey(ctx context.Context, k clientKey) (*quotaSnapshot, error) {
+	accounts := h.accountCandidates(k)
+	if len(accounts) == 0 {
+		return nil, errors.New("no enabled upstream account")
+	}
+	if keyAccountID(k) != poolAccountID {
+		return h.currentQuota(ctx, accounts[0].ID, false)
+	}
+	combined := &quotaSnapshot{}
+	combined.Official.OpusNegative = true
+	var firstErr error
+	for _, account := range accounts {
+		q, err := h.currentQuota(ctx, account.ID, false)
+		if err != nil {
+			firstErr = err
+			continue
+		}
+		combined.Fixed += q.Fixed
+		combined.Purchased += q.Purchased
+		combined.Official.Fixed += q.Official.Fixed
+		combined.Official.Purchased += q.Official.Purchased
+		combined.Official.Active = combined.Official.Active || q.Official.Active
+		combined.Official.Grace = combined.Official.Grace || q.Official.Grace
+		combined.Official.Tier = max(combined.Official.Tier, q.Official.Tier)
+		if q.Official.OpusKnown {
+			combined.Official.OpusKnown = true
+			combined.Official.OpusPercent += q.projectedOpusPercent()
+			combined.Official.OpusNegative = combined.Official.OpusNegative && q.Official.OpusNegative
+			if len(combined.Official.Usage) == 0 {
+				combined.Official.Usage = q.Official.Usage
+			}
+		}
+		if combined.Refreshed.IsZero() || q.Refreshed.Before(combined.Refreshed) {
+			combined.Refreshed = q.Refreshed
+		}
+	}
+	if combined.Refreshed.IsZero() {
+		return nil, firstErr
+	}
+	combined.Official.OpusPercent = min(100, combined.Official.OpusPercent)
+	return combined, nil
+}
+
+func (h *ManagedHandler) fetchQuota(ctx context.Context, token string) (upstreamQuota, error) {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.imageURL.String()+"/user/subscription", nil)
 	if err != nil {
 		return upstreamQuota{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+h.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return upstreamQuota{}, err
@@ -366,7 +438,7 @@ func (h *ManagedHandler) serveSubscription(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "key unavailable", http.StatusUnauthorized)
 		return
 	}
-	q, err := h.currentQuota(r.Context(), false)
+	q, err := h.quotaForKey(r.Context(), current)
 	if err != nil {
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
@@ -446,14 +518,49 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 		http.Error(w, "multi-image unavailable for key", http.StatusPaymentRequired)
 		return
 	}
-	q, err := h.currentQuota(r.Context(), false)
-	if err != nil {
-		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
+	accounts := h.accountCandidates(current)
+	if len(accounts) == 0 {
+		http.Error(w, "no enabled upstream account", http.StatusServiceUnavailable)
 		return
 	}
-	hold, err := chooseReservation(current, cost, q)
+	start := 0
+	if keyAccountID(current) == poolAccountID {
+		start = h.poolCursor % len(accounts)
+	}
+	var q *quotaSnapshot
+	var hold reservation
+	var selectedAccount upstreamAccount
+	var quotaErr, reservationErr error
+	for offset := range accounts {
+		index := (start + offset) % len(accounts)
+		account := accounts[index]
+		candidate, err := h.currentQuota(r.Context(), account.ID, false)
+		if err != nil {
+			quotaErr = err
+			continue
+		}
+		candidateHold, err := chooseReservation(current, cost, candidate)
+		if err != nil {
+			reservationErr = err
+			continue
+		}
+		selectedAccount, q, hold = account, candidate, candidateHold
+		if keyAccountID(current) == poolAccountID {
+			h.poolCursor = (index + 1) % len(accounts)
+		}
+		break
+	}
+	if q == nil {
+		if quotaErr != nil {
+			http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
+		} else {
+			http.Error(w, reservationErr.Error(), http.StatusPaymentRequired)
+		}
+		return
+	}
+	token, err := h.accountToken(selectedAccount.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusPaymentRequired)
+		http.Error(w, "upstream account unavailable", http.StatusBadGateway)
 		return
 	}
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
@@ -481,7 +588,7 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 	}
 	upstreamRequest := r.Clone(r.Context())
 	upstreamRequest.Header = r.Header.Clone()
-	upstreamRequest.Header.Set("Authorization", "Bearer "+h.token)
+	upstreamRequest.Header.Set("Authorization", "Bearer "+token)
 	upstreamRequest.Body = io.NopCloser(bytes.NewReader(body))
 	upstreamRequest.ContentLength = int64(len(body))
 	tracked := &statusWriter{ResponseWriter: w}

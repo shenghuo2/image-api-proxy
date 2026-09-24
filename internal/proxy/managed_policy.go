@@ -9,6 +9,7 @@ const opusFullImages = 1730
 
 type keyPolicyInput struct {
 	Name             string   `json:"name"`
+	AccountID        *string  `json:"account_id"`
 	Allocation       *int64   `json:"allocation_anlas"`
 	AllowFixed       *bool    `json:"allow_fixed_anlas"`
 	FixedLimit       *int64   `json:"fixed_anlas_limit"`

@@ -12,6 +12,8 @@ import (
 type publicKey struct {
 	ID                 string  `json:"id"`
 	Name               string  `json:"name"`
+	AccountID          string  `json:"account_id"`
+	AccountName        string  `json:"account_name,omitempty"`
 	AllowFixed         bool    `json:"allow_fixed_anlas"`
 	FixedLimit         int64   `json:"fixed_anlas_limit"`
 	FixedSpent         int64   `json:"fixed_anlas_spent"`
@@ -42,7 +44,7 @@ type publicKey struct {
 
 func viewKey(k clientKey) publicKey {
 	return publicKey{
-		ID: k.ID, Name: k.Name,
+		ID: k.ID, Name: k.Name, AccountID: keyAccountID(k),
 		AllowFixed: k.AllowFixed, FixedLimit: k.FixedLimit, FixedSpent: k.FixedSpent,
 		FixedPending: k.FixedPending, FixedRemaining: displayRemaining(fixedRemaining(k)),
 		AllowPurchased: k.AllowPurchased, PurchasedLimit: k.PurchasedLimit,
@@ -67,6 +69,11 @@ func opusMode(k clientKey) string {
 
 func (h *ManagedHandler) viewAdminKey(k clientKey) publicKey {
 	view := viewKey(k)
+	if view.AccountID == poolAccountID {
+		view.AccountName = "账号池"
+	} else if account, ok := h.accounts.find(view.AccountID); ok {
+		view.AccountName = account.Name
+	}
 	if k.KeyCiphertext != "" {
 		if raw, err := h.vault.open(k.KeyCiphertext); err == nil && hexHash(raw) == k.Hash {
 			view.Key = raw
@@ -97,6 +104,8 @@ func decodeAdminBody(r *http.Request, dst any) error {
 
 func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/admin/accounts" || strings.HasPrefix(r.URL.Path, "/admin/accounts/"):
+		h.serveAdminAccounts(w, r)
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodGet:
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodPut:
@@ -177,13 +186,51 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer release()
-	q, err := h.currentQuota(r.Context(), force)
-	if err != nil {
+	keys := h.store.snapshot()
+	accounts := h.accounts.snapshot()
+	q := &quotaSnapshot{}
+	accountQuotas := make([]map[string]any, 0, len(accounts))
+	accountErrors := make([]map[string]string, 0)
+	var fixedAllocated, purchasedAllocated int64
+	for _, account := range accounts {
+		if account.Disabled {
+			continue
+		}
+		current, err := h.currentQuota(r.Context(), account.ID, force)
+		if err != nil {
+			accountErrors = append(accountErrors, map[string]string{"account_id": account.ID, "name": account.Name})
+			continue
+		}
+		accountQuotas = append(accountQuotas, accountQuotaView(account, current, keys))
+		fixed, purchased := totalRemainingForAccount(keys, account.ID)
+		fixedAllocated += fixed
+		purchasedAllocated += purchased
+		q.Fixed += current.Fixed
+		q.Purchased += current.Purchased
+		q.Official.Fixed += current.Official.Fixed
+		q.Official.Purchased += current.Official.Purchased
+		q.Official.Active = q.Official.Active || current.Official.Active
+		q.Official.Grace = q.Official.Grace || current.Official.Grace
+		q.Official.Tier = max(q.Official.Tier, current.Official.Tier)
+		if current.Official.OpusKnown {
+			q.Official.OpusKnown = true
+			q.Official.OpusPercent += current.projectedOpusPercent()
+			if len(q.Official.Usage) == 0 {
+				q.Official.Usage = current.Official.Usage
+			}
+		}
+		if q.Refreshed.IsZero() || current.Refreshed.Before(q.Refreshed) {
+			q.Refreshed = current.Refreshed
+		}
+	}
+	if len(accountQuotas) == 0 {
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
 	}
-	keys := h.store.snapshot()
-	fixedAllocated, purchasedAllocated := totalRemaining(keys)
+	poolFixed, poolPurchased := totalRemainingForPool(keys)
+	fixedAllocated += poolFixed
+	purchasedAllocated += poolPurchased
+	q.Official.OpusPercent = min(100, q.Official.OpusPercent)
 	var unlimitedFixed, unlimitedPurchased, unlimitedOpus int
 	for _, key := range keys {
 		if key.Revoked {
@@ -204,6 +251,7 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 		"upstream_anlas":        q.Official.Fixed + q.Official.Purchased,
 		"projected_fixed_anlas": q.Fixed, "projected_purchased_anlas": q.Purchased,
 		"allocated_fixed_anlas": fixedAllocated, "allocated_purchased_anlas": purchasedAllocated,
+		"account_quotas": accountQuotas, "account_errors": accountErrors,
 		"unlimited_fixed_keys": unlimitedFixed, "unlimited_purchased_keys": unlimitedPurchased, "unlimited_opus_keys": unlimitedOpus,
 		"allocated_remaining_anlas":   fixedAllocated + purchasedAllocated,
 		"unallocated_fixed_anlas":     max(0, q.Fixed-fixedAllocated),
@@ -221,7 +269,14 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		http.Error(w, "enable multi-image in settings first", http.StatusConflict)
 		return
 	}
-	key := clientKey{Name: input.Name, PolicyVersion: 1}
+	key := clientKey{Name: input.Name, AccountID: poolAccountID, PolicyVersion: 1}
+	if input.AccountID != nil {
+		key.AccountID = *input.AccountID
+	}
+	if !h.validAccountChoice(key.AccountID) {
+		http.Error(w, "account unavailable", http.StatusBadRequest)
+		return
+	}
 	if err := applyPolicy(&key, input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -232,9 +287,17 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		return
 	}
 	defer release()
-	q, err := h.currentQuota(r.Context(), false)
+	if !h.validAccountChoice(key.AccountID) {
+		http.Error(w, "account unavailable", http.StatusConflict)
+		return
+	}
+	quotas, err := h.activeQuotas(r.Context())
 	if err != nil {
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
+		return
+	}
+	if key.AccountID != poolAccountID && quotas[key.AccountID] == nil {
+		http.Error(w, "upstream account quota unavailable", http.StatusBadGateway)
 		return
 	}
 	key.ID, err = randomHex(8)
@@ -257,11 +320,11 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		if key.AllowMultiImage && !h.settings.snapshot().AllowMultiImage {
 			return nil, errors.New("enable multi-image in settings first")
 		}
-		fixed, purchased := totalRemaining(keys)
-		if (key.FixedLimit != -1 && fixed+fixedRemaining(key) > q.Fixed) || (key.PurchasedLimit != -1 && purchased+purchasedRemaining(key) > q.Purchased) {
-			return nil, errors.New("not enough unallocated upstream Anlas")
+		keys = append(keys, key)
+		if err := validateAccountAllocations(keys, quotas); err != nil {
+			return nil, err
 		}
-		return append(keys, key), nil
+		return keys, nil
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -317,7 +380,7 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	defer release()
-	q, err := h.currentQuota(r.Context(), false)
+	quotas, err := h.activeQuotas(r.Context())
 	if err != nil {
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
@@ -326,9 +389,21 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
 		for i := range keys {
 			if keys[i].ID == id && !keys[i].Revoked {
+				if input.AccountID != nil && *input.AccountID != keyAccountID(keys[i]) {
+					if !h.validAccountChoice(*input.AccountID) {
+						return nil, errors.New("account unavailable")
+					}
+					if keys[i].FixedSpent+keys[i].PurchasedSpent+keys[i].OpusUsed != 0 {
+						return nil, errors.New("cannot move a key with usage to another account")
+					}
+					keys[i].AccountID = *input.AccountID
+				}
 				wasAllowed := keys[i].AllowMultiImage
 				if err := applyPolicy(&keys[i], input); err != nil {
 					return nil, err
+				}
+				if keyAccountID(keys[i]) != poolAccountID && quotas[keyAccountID(keys[i])] == nil {
+					return nil, errors.New("upstream account quota unavailable")
 				}
 				if keys[i].AllowMultiImage && !wasAllowed && !h.settings.snapshot().AllowMultiImage {
 					return nil, errors.New("enable multi-image in settings first")
@@ -339,9 +414,8 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 					}
 					keys[i].Name = input.Name
 				}
-				fixed, purchased := totalRemaining(keys)
-				if fixed > q.Fixed || purchased > q.Purchased {
-					return nil, errors.New("not enough unallocated upstream Anlas")
+				if err := validateAccountAllocations(keys, quotas); err != nil {
+					return nil, err
 				}
 				updated = keys[i]
 				return keys, nil
@@ -396,7 +470,7 @@ func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id st
 	}
 	// A previous refresh may already include the actual upstream charge.
 	// Re-fetch after manual reconciliation instead of applying its delta twice.
-	h.quota = nil
-	h.lastQuotaAttempt = time.Time{}
+	h.quotas = make(map[string]*quotaSnapshot)
+	h.lastQuotaAttempt = make(map[string]time.Time)
 	jsonReply(w, http.StatusOK, viewKey(updated))
 }

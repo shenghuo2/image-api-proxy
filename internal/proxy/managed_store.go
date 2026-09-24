@@ -17,6 +17,7 @@ import (
 type clientKey struct {
 	ID               string  `json:"id"`
 	Name             string  `json:"name"`
+	AccountID        string  `json:"account_id,omitempty"`
 	Hash             string  `json:"hash"`
 	KeyCiphertext    string  `json:"key_ciphertext,omitempty"`
 	PolicyVersion    int     `json:"policy_version"`
@@ -237,16 +238,4 @@ func displayRemaining(value int64) int64 {
 		return -1
 	}
 	return value
-}
-
-func totalRemaining(keys []clientKey) (fixed, purchased int64) {
-	for _, key := range keys {
-		if key.FixedLimit != -1 {
-			fixed += fixedRemaining(key)
-		}
-		if key.PurchasedLimit != -1 {
-			purchased += purchasedRemaining(key)
-		}
-	}
-	return fixed, purchased
 }
