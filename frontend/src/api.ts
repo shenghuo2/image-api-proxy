@@ -26,6 +26,7 @@ export interface ClientKey {
   spent_anlas: number
   pending_anlas: number
   remaining_anlas: number
+  queue_limit: number
   revoked: boolean
   key?: string
 }
@@ -93,10 +94,26 @@ export interface KeyPolicy {
   opus_limit_mode: 'images' | 'percent'
   opus_limit_percent: number
   opus_limit_images: number
+  queue_limit: number
 }
 
 export interface AdminSettings {
   allow_multi_image: boolean
+}
+
+export interface QueueEntry {
+  position?: number
+  key_id?: string
+  key_name: string
+  route: string
+  queued_at: string
+  started_at?: string
+}
+
+export interface QueueState {
+  capacity: number
+  active: QueueEntry | null
+  waiting: QueueEntry[]
 }
 
 export class ApiError extends Error {
@@ -145,6 +162,7 @@ export const api = {
   updateSettings: (key: string, settings: AdminSettings) => request<AdminSettings>(key, '/admin/settings', 'PUT', settings),
   keys: (key: string) => request<ClientKey[]>(key, '/admin/keys'),
   quota: (key: string) => request<AdminQuota>(key, '/admin/quota'),
+  queue: (key: string) => request<QueueState>(key, '/admin/queue'),
   refreshQuota: (key: string) => request<AdminQuota>(key, '/admin/quota/refresh', 'POST'),
   createKey: (key: string, policy: KeyPolicy) => request<{ key: string; client: ClientKey }>(key, '/admin/keys', 'POST', policy),
   updateKey: (key: string, id: string, policy: KeyPolicy) => request<ClientKey>(key, `/admin/keys/${id}`, 'PUT', policy),
