@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,54 @@ import (
 
 const testAdminKey = "admin-0123456789abcdef0123456789abcdef"
 const testNAIToken = "nai-server-token-0123456789"
+
+func TestAdminLoginWithoutNovelAIToken(t *testing.T) {
+	h, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: filepath.Join(t.TempDir(), "keys.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	request.Header.Set("Authorization", "Bearer "+testAdminKey)
+	h.ServeHTTP(keys, request)
+	if keys.Code != http.StatusOK || strings.TrimSpace(keys.Body.String()) != "[]" {
+		t.Fatalf("admin keys without NovelAI token: status=%d body=%s", keys.Code, keys.Body.String())
+	}
+	quota := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/admin/quota", nil)
+	request.Header.Set("Authorization", "Bearer "+testAdminKey)
+	h.ServeHTTP(quota, request)
+	if quota.Code != http.StatusBadGateway {
+		t.Fatalf("quota without NovelAI token: status=%d", quota.Code)
+	}
+}
+
+func TestAdminCORSAllowsOnlyConfiguredOrigin(t *testing.T) {
+	origin := "http://localhost:5173"
+	h, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, AdminOrigin: origin, NovelAIToken: testNAIToken, StatePath: filepath.Join(t.TempDir(), "keys.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := httptest.NewRequest(http.MethodOptions, "/admin/keys", nil)
+	preflight.Header.Set("Origin", origin)
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	preflightResult := httptest.NewRecorder()
+	h.ServeHTTP(preflightResult, preflight)
+	if preflightResult.Code != http.StatusNoContent || preflightResult.Header().Get("Access-Control-Allow-Origin") != origin || preflightResult.Header().Get("Access-Control-Allow-Headers") != "Authorization, Content-Type" {
+		t.Fatalf("admin preflight: status=%d headers=%v", preflightResult.Code, preflightResult.Header())
+	}
+	request := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	request.Header.Set("Authorization", "Bearer "+testAdminKey)
+	request.Header.Set("Origin", "https://other.example")
+	result := httptest.NewRecorder()
+	h.ServeHTTP(result, request)
+	if result.Code != http.StatusOK || result.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("untrusted origin: status=%d headers=%v", result.Code, result.Header())
+	}
+	if _, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, AdminOrigin: origin + "/path", NovelAIToken: testNAIToken, StatePath: filepath.Join(t.TempDir(), "invalid.json")}); err == nil {
+		t.Fatal("admin origin with path accepted")
+	}
+}
 
 func managedRequest(t *testing.T, method, url, key string, body any) *http.Request {
 	t.Helper()
@@ -60,6 +110,257 @@ func doManaged(t *testing.T, req *http.Request, status int) map[string]any {
 		t.Fatal(err)
 	}
 	return body
+}
+
+type multipartPart struct {
+	name, contentType string
+	data              []byte
+}
+
+func managedMultipartBody(t *testing.T, parts ...multipartPart) ([]byte, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, item := range parts {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename="blob"`, item.name))
+		header.Set("Content-Type", item.contentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(item.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes(), writer.FormDataContentType()
+}
+
+func TestManagedOfficialMultipartRequests(t *testing.T) {
+	request := []byte(`{"model":"nai-diffusion-4-5-full","parameters":{"width":512,"height":512,"steps":12,"n_samples":2,"reference_image_multiple_cached":[{},{},{},{},{}],"director_reference_images_cached":[{}]}}`)
+	image := []byte{0x89, 0x50, 0x4e, 0x47, 0x00, 0xff}
+	generationBody, generationType := managedMultipartBody(t,
+		multipartPart{name: "image", contentType: "image/png", data: image},
+		multipartPart{name: "request", contentType: "application/json", data: request},
+	)
+	vibeBody, vibeType := managedMultipartBody(t,
+		multipartPart{name: "image", contentType: "image/png", data: image},
+		multipartPart{name: "request", contentType: "application/json", data: []byte(`{"image":"image","model":"nai-diffusion-4-5-full","information_extracted":1}`)},
+	)
+	targets := map[string]struct {
+		body        []byte
+		contentType string
+	}{
+		"/ai/generate-image": {generationBody, generationType},
+		"/ai/encode-vibe":    {vibeBody, vibeType},
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/subscription" {
+			io.WriteString(w, `{"active":true,"tier":3,"trainingStepsLeft":{"fixedTrainingStepsLeft":100,"purchasedTrainingSteps":0},"usage":{"percent":90,"isNegative":false}}`)
+			return
+		}
+		want, ok := targets[r.URL.Path]
+		if !ok {
+			t.Errorf("unexpected upstream path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil || !bytes.Equal(body, want.body) || r.Header.Get("Content-Type") != want.contentType || r.Header.Get("Authorization") != "Bearer "+testNAIToken {
+			t.Errorf("multipart changed before upstream: path=%s body_equal=%t content_type=%q error=%v", r.URL.Path, bytes.Equal(body, want.body), r.Header.Get("Content-Type"), err)
+		}
+		w.Write([]byte{0, 1, 2, 255})
+	}))
+	defer upstream.Close()
+	h, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, NovelAIToken: testNAIToken, StatePath: filepath.Join(t.TempDir(), "keys.json"), ImageUpstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/settings", testAdminKey, map[string]any{"allow_multi_image": true}), 200)
+	created := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "multipart", "allow_fixed_anlas": true, "fixed_anlas_limit": 100, "allow_opus": true, "opus_limit_images": 1, "allow_multi_image": true}), 201)
+	key := created["key"].(string)
+	for _, path := range []string{"/ai/generate-image", "/ai/encode-vibe"} {
+		body := targets[path]
+		req, err := http.NewRequest(http.MethodPost, server.URL+path, bytes.NewReader(body.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", body.contentType)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !bytes.Equal(data, []byte{0, 1, 2, 255}) {
+			t.Fatalf("%s: status=%d body=%v", path, resp.StatusCode, data)
+		}
+	}
+	quota := doManaged(t, managedRequest(t, "GET", server.URL+"/quota", key, nil), 200)
+	if quota["spent_anlas"] != float64(36) || quota["opus_used_images"] != float64(0) || quota["pending_anlas"] != float64(0) {
+		t.Fatalf("multipart quota = %v", quota)
+	}
+}
+
+func TestMultipartJobRejectsMissingOrDuplicateRequest(t *testing.T) {
+	validRequest := []byte(`{"model":"nai-diffusion-4-5-full","parameters":{"width":512,"height":512,"steps":12,"n_samples":1}}`)
+	for _, tc := range []struct {
+		name  string
+		parts []multipartPart
+	}{
+		{"missing", []multipartPart{{name: "image", contentType: "image/png", data: []byte{0, 255}}}},
+		{"duplicate", []multipartPart{{name: "request", contentType: "application/json", data: validRequest}, {name: "request", contentType: "application/json", data: validRequest}}},
+		{"invalid JSON", []multipartPart{{name: "request", contentType: "application/json", data: []byte("not JSON")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, contentType := managedMultipartBody(t, tc.parts...)
+			if _, err := estimateJob("/ai/generate-image", body, contentType); err == nil {
+				t.Fatal("invalid multipart job accepted")
+			}
+		})
+	}
+}
+
+func TestMultiImageRequiresGlobalAndKeyPermission(t *testing.T) {
+	var forwarded atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/subscription" {
+			io.WriteString(w, `{"active":true,"tier":3,"trainingStepsLeft":{"fixedTrainingStepsLeft":100,"purchasedTrainingSteps":0},"usage":{"percent":90}}`)
+			return
+		}
+		forwarded.Add(1)
+		w.Write([]byte("image"))
+	}))
+	defer upstream.Close()
+	path := filepath.Join(t.TempDir(), "keys.json")
+	h, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, NovelAIToken: testNAIToken, StatePath: path, ImageUpstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	settings := doManaged(t, managedRequest(t, "GET", server.URL+"/admin/settings", testAdminKey, nil), 200)
+	if settings["allow_multi_image"] != false {
+		t.Fatalf("default settings: %v", settings)
+	}
+	doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "denied", "allow_multi_image": true}), 409)
+	created := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "batch", "allow_fixed_anlas": true, "fixed_anlas_limit": 100, "allow_opus": true, "opus_limit_images": 10}), 201)
+	key := created["key"].(string)
+	id := created["client"].(map[string]any)["id"].(string)
+	job := map[string]any{"model": "nai-diffusion-4-5-full", "parameters": map[string]any{"width": 512, "height": 512, "steps": 12, "n_samples": 2}}
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/generate-image", key, job), 402)
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/keys/"+id, testAdminKey, map[string]any{"allow_multi_image": true}), 409)
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/settings", testAdminKey, map[string]any{"allow_multi_image": true}), 200)
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/generate-image", key, job), 402)
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/keys/"+id, testAdminKey, map[string]any{"allow_multi_image": true}), 200)
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/generate-image", key, job), 200)
+	quota := doManaged(t, managedRequest(t, "GET", server.URL+"/quota", key, nil), 200)
+	if quota["spent_anlas"] != float64(18) || quota["opus_used_images"] != float64(0) || quota["allow_multi_image"] != true {
+		t.Fatalf("multi-image quota: %v", quota)
+	}
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/settings", testAdminKey, map[string]any{"allow_multi_image": false}), 200)
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/generate-image", key, job), 402)
+	updated := doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/keys/"+id, testAdminKey, map[string]any{"name": "renamed", "allow_multi_image": true}), 200)
+	if updated["name"] != "renamed" || updated["allow_multi_image"] != true {
+		t.Fatalf("disabled global setting changed key policy: %v", updated)
+	}
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/settings", testAdminKey, map[string]any{"allow_multi_image": true}), 200)
+	doManaged(t, managedRequest(t, "PUT", server.URL+"/admin/keys/"+id, testAdminKey, map[string]any{"allow_multi_image": false}), 200)
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/generate-image", key, job), 402)
+	if forwarded.Load() != 1 {
+		t.Fatalf("forwarded %d disabled jobs", forwarded.Load()-1)
+	}
+	reopened, err := openKeyStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted, ok := reopened.find(key); !ok || persisted.AllowMultiImage {
+		t.Fatalf("persisted policy: %+v", persisted)
+	}
+	reopenedSettings, err := openSettingsStore(path)
+	if err != nil || !reopenedSettings.snapshot().AllowMultiImage {
+		t.Fatalf("persisted settings: %v, %v", reopenedSettings, err)
+	}
+}
+
+func TestBatchCostNeverUsesOpus(t *testing.T) {
+	for _, samples := range []int{2, 3, 4} {
+		body := fmt.Sprintf(`{"model":"nai-diffusion-4-5-full","parameters":{"width":512,"height":512,"steps":12,"n_samples":%d}}`, samples)
+		cost, err := estimateJob("/ai/generate-image", []byte(body), "application/json")
+		if err != nil || !cost.MultiImage || cost.OpusEligible || cost.Full != int64(9*samples) {
+			t.Fatalf("samples=%d cost=%+v err=%v", samples, cost, err)
+		}
+	}
+	if _, err := estimateJob("/ai/generate-image", []byte(`{"model":"nai-diffusion-4-5-full","parameters":{"width":512,"height":512,"steps":12,"n_samples":5}}`), "application/json"); err == nil {
+		t.Fatal("five samples accepted")
+	}
+}
+
+func TestAdditionalImageRoutes(t *testing.T) {
+	var forwarded atomic.Int64
+	multipartPayload, multipartContentType := managedMultipartBody(t,
+		multipartPart{name: "image", contentType: "image/png", data: []byte{0x89, 0x50, 0x4e, 0x47, 0xff}},
+		multipartPart{name: "request", contentType: "application/json", data: []byte(`{"image":"image","req_type":"colorize","width":512,"height":512}`)},
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/subscription" {
+			io.WriteString(w, `{"active":true,"tier":2,"trainingStepsLeft":{"fixedTrainingStepsLeft":100,"purchasedTrainingSteps":0}}`)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+testNAIToken {
+			t.Error("upstream credentials")
+		}
+		forwarded.Add(1)
+		switch r.URL.Path {
+		case "/ai/generate-image/suggest-tags":
+			if r.Method != "GET" || r.URL.Query().Get("prompt") != "blue hair" || r.URL.Query().Get("type") != "animev5" {
+				t.Errorf("tag query: %s", r.URL)
+			}
+			io.WriteString(w, `{"tags":[]}`)
+		case "/ai/annotate-image":
+			io.WriteString(w, `{"tags":[]}`)
+		case "/ai/augment-image":
+			if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+				body, _ := io.ReadAll(r.Body)
+				if !bytes.Equal(body, multipartPayload) || r.Header.Get("Content-Type") != multipartContentType {
+					t.Error("augmentation multipart changed before upstream")
+				}
+			}
+			io.WriteString(w, "zip")
+		default:
+			t.Errorf("unexpected route: %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	h, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, NovelAIToken: testNAIToken, StatePath: filepath.Join(t.TempDir(), "keys.json"), ImageUpstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	created := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "tools", "allow_fixed_anlas": true, "fixed_anlas_limit": 100}), 201)
+	key := created["key"].(string)
+	doManaged(t, managedRequest(t, "GET", server.URL+"/image/ai/generate-image/suggest-tags?prompt=blue+hair&type=animev5", key, nil), 200)
+	doManaged(t, managedRequest(t, "GET", server.URL+"/ai/generate-image/suggest-tags?prompt=a", key, nil), 400)
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/annotate-image", key, map[string]any{"image": "base64", "req_type": "wd-tagger"}), 200)
+	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/augment-image", key, map[string]any{"image": "base64", "req_type": "colorize", "width": 512, "height": 512}), 200)
+	multipartRequest, err := http.NewRequest("POST", server.URL+"/image/ai/augment-image", bytes.NewReader(multipartPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	multipartRequest.Header.Set("Authorization", "Bearer "+key)
+	multipartRequest.Header.Set("Content-Type", multipartContentType)
+	doManaged(t, multipartRequest, 200)
+	quota := doManaged(t, managedRequest(t, "GET", server.URL+"/quota", key, nil), 200)
+	if quota["spent_anlas"] != float64(22) || forwarded.Load() != 4 {
+		t.Fatalf("tools quota: %v, forwarded=%d", quota, forwarded.Load())
+	}
 }
 
 func TestManagedKeysQuotaAndPersistence(t *testing.T) {
@@ -589,7 +890,7 @@ func TestLegacyKeyMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, ok := store.find("old-secret")
-	if !ok || !key.AllowFixed || key.FixedLimit != 30 || key.FixedSpent != 7 || key.FixedPending != 2 || key.AllowPurchased || key.AllowOpus {
+	if !ok || !key.AllowFixed || key.FixedLimit != 30 || key.FixedSpent != 7 || key.FixedPending != 2 || key.AllowPurchased || key.AllowOpus || key.AllowMultiImage {
 		t.Fatalf("migrated key = %+v, found = %v", key, ok)
 	}
 	if err := store.update(func(keys []clientKey) ([]clientKey, error) { return keys, nil }); err != nil {

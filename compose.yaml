@@ -13,6 +13,7 @@ services:
       PROXY_NAI_TOKEN: ${PROXY_NAI_TOKEN:?set your NovelAI token in .env}
       PROXY_QUEUE_SIZE: ${PROXY_QUEUE_SIZE:-64}
       PROXY_QUOTA_TTL: ${PROXY_QUOTA_TTL:-5m}
+      PROXY_ADMIN_ORIGIN: ${PROXY_ADMIN_ORIGIN:-}
       PROXY_STATE_PATH: /data/keys.json
     volumes:
       - proxy-data:/data

@@ -23,6 +23,7 @@ type publicKey struct {
 	PurchasedPending   int64  `json:"purchased_anlas_pending"`
 	PurchasedRemaining int64  `json:"purchased_anlas_remaining"`
 	AllowOpus          bool   `json:"allow_opus"`
+	AllowMultiImage    bool   `json:"allow_multi_image"`
 	OpusLimit          int64  `json:"opus_limit_images"`
 	OpusUsed           int64  `json:"opus_used_images"`
 	OpusPending        int64  `json:"opus_pending_images"`
@@ -43,7 +44,7 @@ func viewKey(k clientKey) publicKey {
 		AllowPurchased: k.AllowPurchased, PurchasedLimit: k.PurchasedLimit,
 		PurchasedSpent: k.PurchasedSpent, PurchasedPending: k.PurchasedPending,
 		PurchasedRemaining: purchasedRemaining(k),
-		AllowOpus:          k.AllowOpus, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
+		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
 		OpusPending: k.OpusPending, OpusRemaining: opusRemaining(k),
 		AllocatedAnlas: k.FixedLimit + k.PurchasedLimit,
 		SpentAnlas:     k.FixedSpent + k.PurchasedSpent,
@@ -67,6 +68,21 @@ func decodeAdminBody(r *http.Request, dst any) error {
 
 func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/admin/settings" && r.Method == http.MethodGet:
+		jsonReply(w, http.StatusOK, h.settings.snapshot())
+	case r.URL.Path == "/admin/settings" && r.Method == http.MethodPut:
+		var input struct {
+			AllowMultiImage *bool `json:"allow_multi_image"`
+		}
+		if err := decodeAdminBody(r, &input); err != nil || input.AllowMultiImage == nil {
+			http.Error(w, "invalid settings", http.StatusBadRequest)
+			return
+		}
+		if err := h.settings.set(proxySettings{AllowMultiImage: *input.AllowMultiImage}); err != nil {
+			http.Error(w, "settings unavailable", http.StatusInternalServerError)
+			return
+		}
+		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/quota" && r.Method == http.MethodGet:
 		h.serveAdminQuota(w, r, false)
 	case r.URL.Path == "/admin/quota/refresh" && r.Method == http.MethodPost:
@@ -153,6 +169,10 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input keyPolicyInput) {
+	if input.AllowMultiImage != nil && *input.AllowMultiImage && !h.settings.snapshot().AllowMultiImage {
+		http.Error(w, "enable multi-image in settings first", http.StatusConflict)
+		return
+	}
 	key := clientKey{Name: input.Name, PolicyVersion: 1}
 	if err := applyPolicy(&key, input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -181,6 +201,9 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 	}
 	key.Hash = hexHash(raw)
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+		if key.AllowMultiImage && !h.settings.snapshot().AllowMultiImage {
+			return nil, errors.New("enable multi-image in settings first")
+		}
 		fixed, purchased := totalRemaining(keys)
 		if fixed+fixedRemaining(key) > q.Fixed || purchased+purchasedRemaining(key) > q.Purchased {
 			return nil, errors.New("not enough unallocated upstream Anlas")
@@ -210,8 +233,12 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
 		for i := range keys {
 			if keys[i].ID == id && !keys[i].Revoked {
+				wasAllowed := keys[i].AllowMultiImage
 				if err := applyPolicy(&keys[i], input); err != nil {
 					return nil, err
+				}
+				if keys[i].AllowMultiImage && !wasAllowed && !h.settings.snapshot().AllowMultiImage {
+					return nil, errors.New("enable multi-image in settings first")
 				}
 				if input.Name != "" {
 					if len(input.Name) > 80 {

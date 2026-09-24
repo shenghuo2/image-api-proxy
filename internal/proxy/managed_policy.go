@@ -5,14 +5,15 @@ import (
 )
 
 type keyPolicyInput struct {
-	Name           string `json:"name"`
-	Allocation     *int64 `json:"allocation_anlas"`
-	AllowFixed     *bool  `json:"allow_fixed_anlas"`
-	FixedLimit     *int64 `json:"fixed_anlas_limit"`
-	AllowPurchased *bool  `json:"allow_purchased_anlas"`
-	PurchasedLimit *int64 `json:"purchased_anlas_limit"`
-	AllowOpus      *bool  `json:"allow_opus"`
-	OpusLimit      *int64 `json:"opus_limit_images"`
+	Name            string `json:"name"`
+	Allocation      *int64 `json:"allocation_anlas"`
+	AllowFixed      *bool  `json:"allow_fixed_anlas"`
+	FixedLimit      *int64 `json:"fixed_anlas_limit"`
+	AllowPurchased  *bool  `json:"allow_purchased_anlas"`
+	PurchasedLimit  *int64 `json:"purchased_anlas_limit"`
+	AllowOpus       *bool  `json:"allow_opus"`
+	AllowMultiImage *bool  `json:"allow_multi_image"`
+	OpusLimit       *int64 `json:"opus_limit_images"`
 }
 
 func applyPolicy(k *clientKey, input keyPolicyInput) error {
@@ -40,6 +41,9 @@ func applyPolicy(k *clientKey, input keyPolicyInput) error {
 	}
 	if input.OpusLimit != nil {
 		k.OpusLimit = *input.OpusLimit
+	}
+	if input.AllowMultiImage != nil {
+		k.AllowMultiImage = *input.AllowMultiImage
 	}
 	if k.FixedLimit < 0 || k.FixedLimit > 1e9 || k.PurchasedLimit < 0 || k.PurchasedLimit > 1e9 || k.OpusLimit < 0 || k.OpusLimit > 1e7 {
 		return errors.New("invalid quota limit")

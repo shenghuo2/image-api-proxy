@@ -27,6 +27,7 @@ type clientKey struct {
 	PurchasedSpent   int64  `json:"purchased_anlas_spent"`
 	PurchasedPending int64  `json:"purchased_anlas_pending"`
 	AllowOpus        bool   `json:"allow_opus"`
+	AllowMultiImage  bool   `json:"allow_multi_image"`
 	OpusLimit        int64  `json:"opus_limit_images"`
 	OpusUsed         int64  `json:"opus_used_images"`
 	OpusPending      int64  `json:"opus_pending_images"`

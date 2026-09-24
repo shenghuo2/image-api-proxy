@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httputil"
@@ -20,6 +21,7 @@ import (
 
 type ManagedConfig struct {
 	AdminKey      string
+	AdminOrigin   string
 	NovelAIToken  string
 	StatePath     string
 	QueueSize     int
@@ -36,8 +38,10 @@ type ticket struct {
 
 type ManagedHandler struct {
 	adminHash        [sha256.Size]byte
+	adminOrigin      string
 	token            string
 	store            *keyStore
+	settings         *settingsStore
 	queue            chan ticket
 	client           *http.Client
 	imageURL         *url.URL
@@ -48,8 +52,14 @@ type ManagedHandler struct {
 }
 
 func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
-	if len(cfg.AdminKey) < 32 || len(cfg.NovelAIToken) < 16 {
-		return nil, errors.New("admin key must be at least 32 characters and NovelAI token at least 16")
+	if len(cfg.AdminKey) < 32 || (cfg.NovelAIToken != "" && len(cfg.NovelAIToken) < 16) {
+		return nil, errors.New("admin key must be at least 32 characters and configured NovelAI token at least 16")
+	}
+	if cfg.AdminOrigin != "" {
+		origin, err := url.Parse(cfg.AdminOrigin)
+		if err != nil || origin.Host == "" || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || origin.User != nil || origin.String() != cfg.AdminOrigin {
+			return nil, errors.New("admin origin must be an exact http(s) origin")
+		}
 	}
 	if cfg.QueueSize == 0 {
 		cfg.QueueSize = 64
@@ -74,6 +84,10 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if err != nil {
 		return nil, err
 	}
+	settings, err := openSettingsStore(cfg.StatePath)
+	if err != nil {
+		return nil, err
+	}
 	transport := cfg.Transport
 	if transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
@@ -83,14 +97,16 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		transport = t
 	}
 	h := &ManagedHandler{
-		adminHash: sha256.Sum256([]byte(cfg.AdminKey)),
-		token:     cfg.NovelAIToken,
-		store:     store,
-		queue:     make(chan ticket, cfg.QueueSize),
-		client:    &http.Client{Transport: transport, Timeout: 25 * time.Second},
-		imageURL:  imageURL,
-		image:     newReverseProxy(imageURL, "/image", transport),
-		quotaTTL:  cfg.QuotaTTL,
+		adminHash:   sha256.Sum256([]byte(cfg.AdminKey)),
+		adminOrigin: cfg.AdminOrigin,
+		token:       cfg.NovelAIToken,
+		store:       store,
+		settings:    settings,
+		queue:       make(chan ticket, cfg.QueueSize),
+		client:      &http.Client{Transport: transport, Timeout: 25 * time.Second},
+		imageURL:    imageURL,
+		image:       newReverseProxy(imageURL, "/image", transport),
+		quotaTTL:    cfg.QuotaTTL,
 	}
 	go h.runQueue()
 	return h, nil
@@ -144,11 +160,24 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if r.URL.RawQuery != "" || r.URL.EscapedPath() != r.URL.Path {
+	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/ai/generate-image/suggest-tags" && r.URL.Path != "/image/ai/generate-image/suggest-tags") {
 		http.Error(w, "unsupported request target", http.StatusBadRequest)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin/") {
+		if h.adminOrigin != "" {
+			w.Header().Add("Vary", "Origin")
+		}
+		if h.adminOrigin != "" && r.Header.Get("Origin") == h.adminOrigin {
+			w.Header().Set("Access-Control-Allow-Origin", h.adminOrigin)
+			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.Header().Set("Access-Control-Max-Age", "600")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
 		key, ok := bearerToken(r)
 		if !ok || subtle.ConstantTimeCompare(h.adminHash[:], hashKey(key)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -199,7 +228,62 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if selected.path == "/ai/generate-image/suggest-tags" || selected.path == "/image/ai/generate-image/suggest-tags" {
+		h.serveTagSuggestions(w, r, key)
+		return
+	}
 	h.serveJob(w, r, key, selected)
+}
+
+func (h *ManagedHandler) serveTagSuggestions(w http.ResponseWriter, r *http.Request, key clientKey) {
+	if len(r.URL.RawQuery) > 2048 {
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	for name, values := range query {
+		if (name != "prompt" && name != "model" && name != "type") || len(values) != 1 {
+			http.Error(w, "invalid query", http.StatusBadRequest)
+			return
+		}
+	}
+	if prompt := query.Get("prompt"); len(prompt) < 2 || len(prompt) > 200 {
+		http.Error(w, "invalid prompt", http.StatusBadRequest)
+		return
+	}
+	if model := query.Get("model"); model != "" && !allowedGenerationModel(model) {
+		http.Error(w, "invalid model", http.StatusBadRequest)
+		return
+	}
+	if kind := query.Get("type"); kind != "" && kind != "animev5" {
+		http.Error(w, "invalid type", http.StatusBadRequest)
+		return
+	}
+	release, err := h.enter(r.Context())
+	if err != nil {
+		h.queueError(w, err)
+		return
+	}
+	defer release()
+	found := false
+	for _, current := range h.store.snapshot() {
+		if current.ID == key.ID && !current.Revoked {
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "key unavailable", http.StatusUnauthorized)
+		return
+	}
+	upstreamRequest := r.Clone(r.Context())
+	upstreamRequest.Header = r.Header.Clone()
+	upstreamRequest.Header.Set("Authorization", "Bearer "+h.token)
+	h.image.ServeHTTP(w, upstreamRequest)
 }
 
 type upstreamQuota struct {
@@ -242,6 +326,7 @@ func (h *ManagedHandler) currentQuota(ctx context.Context, force bool) (*quotaSn
 	h.lastQuotaAttempt = now
 	quota, err := h.fetchQuota(ctx)
 	if err != nil {
+		slog.Warn("upstream quota refresh failed", "error", err)
 		return nil, err
 	}
 	h.quota = &quotaSnapshot{Official: quota, Fixed: quota.Fixed, Purchased: quota.Purchased, Refreshed: time.Now()}
@@ -249,6 +334,9 @@ func (h *ManagedHandler) currentQuota(ctx context.Context, force bool) (*quotaSn
 }
 
 func (h *ManagedHandler) fetchQuota(ctx context.Context) (upstreamQuota, error) {
+	if h.token == "" {
+		return upstreamQuota{}, errors.New("NovelAI token is not configured")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.imageURL.String()+"/user/subscription", nil)
@@ -372,9 +460,34 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	cost, err := estimateJob(selected.path, body)
+	cost, err := estimateJob(selected.path, body, r.Header.Get("Content-Type"))
 	if err != nil {
 		http.Error(w, "unsupported request parameters", http.StatusBadRequest)
+		return
+	}
+	if cost.MultiImage && !h.settings.snapshot().AllowMultiImage {
+		http.Error(w, "multi-image disabled in settings", http.StatusPaymentRequired)
+		return
+	}
+	var current clientKey
+	found := false
+	for _, candidate := range h.store.snapshot() {
+		if candidate.ID == key.ID && !candidate.Revoked {
+			current, found = candidate, true
+			break
+		}
+	}
+	if !found || (cost.MultiImage && !current.AllowMultiImage) {
+		http.Error(w, "multi-image unavailable for key", http.StatusPaymentRequired)
+		return
+	}
+	if cost.Full == 0 {
+		upstreamRequest := r.Clone(r.Context())
+		upstreamRequest.Header = r.Header.Clone()
+		upstreamRequest.Header.Set("Authorization", "Bearer "+h.token)
+		upstreamRequest.Body = io.NopCloser(bytes.NewReader(body))
+		upstreamRequest.ContentLength = int64(len(body))
+		h.image.ServeHTTP(w, upstreamRequest)
 		return
 	}
 	q, err := h.currentQuota(r.Context(), false)
@@ -382,14 +495,14 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
 	}
-	hold, err := chooseReservation(key, cost, q)
+	hold, err := chooseReservation(current, cost, q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusPaymentRequired)
 		return
 	}
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
 		for i := range keys {
-			if keys[i].ID == key.ID && !keys[i].Revoked && fixedRemaining(keys[i]) >= hold.Fixed && purchasedRemaining(keys[i]) >= hold.Purchased && opusRemaining(keys[i]) >= hold.Opus {
+			if keys[i].ID == key.ID && !keys[i].Revoked && (!cost.MultiImage || (h.settings.snapshot().AllowMultiImage && keys[i].AllowMultiImage)) && fixedRemaining(keys[i]) >= hold.Fixed && purchasedRemaining(keys[i]) >= hold.Purchased && opusRemaining(keys[i]) >= hold.Opus {
 				keys[i].FixedSpent += hold.Fixed
 				keys[i].FixedPending += hold.Fixed
 				keys[i].PurchasedSpent += hold.Purchased

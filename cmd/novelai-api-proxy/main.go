@@ -48,7 +48,8 @@ func main() {
 	}
 	handler, err := proxy.NewManaged(proxy.ManagedConfig{
 		AdminKey: os.Getenv("PROXY_ADMIN_KEY"), NovelAIToken: os.Getenv("PROXY_NAI_TOKEN"),
-		StatePath: statePath, QueueSize: queueSize, QuotaTTL: quotaTTL,
+		AdminOrigin: os.Getenv("PROXY_ADMIN_ORIGIN"), StatePath: statePath,
+		QueueSize: queueSize, QuotaTTL: quotaTTL,
 	})
 	if err != nil {
 		logger.Error("invalid proxy configuration", "error", err)
