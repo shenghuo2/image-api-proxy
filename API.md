@@ -40,6 +40,8 @@ curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' 
 
 响应图片、ZIP、Vibe 向量和流式帧不重新编码。上游状态码与响应体直接返回给客户端；代理自身的鉴权、队列、参数和配额错误由代理返回。
 
+管理员可选择开启生成图片归档。归档只在后台读取成功成图，不改变上述响应字节或流式传输；关闭某把 key 的归档只影响后续生成。归档文件只能通过管理员接口查看，客户端 key 无法读取图库。
+
 ## 持久化任务接口
 
 需要在服务更新后保留排队任务的客户端，可把受支持的图片 POST 路由加上 `/jobs` 前缀，发送相同的官方请求体和客户端 Bearer key。例如 `POST /jobs/ai/generate-image`、`POST /jobs/ai/generate-image-stream` 或 `POST /jobs/image/ai/upscale`。提交时建议提供稳定且每次生成唯一的 `Idempotency-Key`（最多 128 字符）；同一 key 用相同标识和请求体重新提交会得到同一任务 ID，请求体或路由不同则返回 409。未提供时服务会随机生成任务 ID，提交响应丢失后无法可靠地找到该任务。
@@ -79,8 +81,13 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `POST /admin/accounts/{id}/quota/refresh` | 请求刷新单账号额度；受最短 30 秒刷新间隔限制 |
 | `GET /admin/keys` | 列出每把 key 的权限、额度与状态；可解密的新 key 含 `key` 字段 |
 | `GET /admin/queue` | 读取当前执行请求、等待池顺序、持久化任务 ID、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
-| `GET /admin/settings` | 查看全局功能配置，默认 `allow_multi_image: false` |
-| `PUT /admin/settings` | 提交 `{"allow_multi_image":true}`，允许为 key 分配多图权限；关闭后立即阻断所有多图请求 |
+| `GET /admin/settings` | 查看全局多图及归档设置 |
+| `PUT /admin/settings` | 部分更新设置，例如 `{"archive_enabled":true,"archive_retention_days":-1,"archive_max_bytes":21474836480}` |
+| `GET /admin/images` | 按 `key_id`、`ip`、`from`、`to`、`page` 筛选归档；时间用 RFC 3339，固定每页 24 张 |
+| `GET /admin/images/stats` | 返回图片数、占用字节、待处理数、失败次数和最近错误 |
+| `GET /admin/images/{id}/thumbnail` | 返回管理员认证的 JPEG 缩略图，不超过 100 KiB |
+| `GET /admin/images/{id}/original` | 下载原始 PNG |
+| `DELETE /admin/images/{id}` | 删除单张图片及其缩略图 |
 | `POST /admin/keys` | 设置名称、账号策略与权限，签发 key；未指定的权限默认关闭，账号默认轮询池 |
 | `PUT /admin/keys/{id}` | 只修改提交的字段，例如 `{"allow_purchased_anlas":true,"purchased_anlas_limit":20}` |
 | `DELETE /admin/keys/{id}` | 撤销 key，释放未用分配额 |
@@ -90,6 +97,8 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 `allow_fixed_anlas`、`allow_purchased_anlas` 和 `allow_opus` 是独立开关，分别对应订阅点数、付费购入点数和 Opus 配额。对应的 `fixed_anlas_limit`、`purchased_anlas_limit` 和 `opus_limit_images` 是这把 key 的**累计上限**；提高上限即可追加可用额。三种上限均可设为 `-1`，表示不设本地累计上限，实际请求仍受预计官方余额和权限约束。Opus 可将 `opus_limit_mode` 设为 `percent` 并使用 `opus_limit_percent`（0–100），以估算满额 1730 次折算累计上限：10% 为 173 次，向下取整；`images` 模式使用 `opus_limit_images`。`opus_effective_limit_images` 返回当前生效的折算次数。请求消耗选中账号的官方 Opus 配额。关闭权限会立刻使该项剩余可用额变为 0，但不清除已用记录。只有 Opus 权限、没有 Anlas 权限的 key 可以使用符合免费条件且无付费附加项的生成请求；当官方会用 Opus 免费生成时，没有 Opus 权限的 key 会被拒绝，即使它有 Anlas 预算，因为代理无法要求 NovelAI 改扣点数。
 
 `allow_multi_image` 是逐 key 的单次多图权限。必须先打开全局同名配置才能为新 key 开启；旧账本及新 key 默认关闭。关闭全局配置时已有 key 的授权记录保留，但多图请求立即不可用。
+
+归档默认关闭；开启 `archive_enabled` 后，每把 key 的同名字段默认开启，可逐把关闭。`archive_retention_days` 默认为 30，`-1` 表示不按日期删除；`archive_max_bytes` 默认为 20 GiB，按最旧图片优先淘汰，至少 1 MiB。每张原图按生成完成时间、提交请求时的 IP、当时的 key 名称和 ID 记录；多图共用 `group_id`。图库图片必须用管理员 Bearer 头获取，不能把密钥拼到图片 URL。归档错误不会改变客户端生成响应，失败统计在 `/admin/images/stats` 中查看。
 
 `queue_limit` 设置每把 key 同时占用的**等待位置数**，不计正在执行的请求。`-1` 表示不设逐 key 上限（旧 key 和新 key 默认值），`0` 表示该 key 只能在队列空闲时立即执行，正整数最多为 10000。修改上限只影响后续入队，不会踢出已经等待的请求。所有 key 仍受全局 `PROXY_QUEUE_SIZE` 限制。客户端 `/quota` 返回 `queue_limit`、全局 `queue_length` 和该 key 的 `key_queue_length`。
 
@@ -120,4 +129,4 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 
 导演增强按客户端采用的 28 步像素公式保守预留点数，背景移除按三倍基础费用加 5 计算。导演工具即使在官方 Opus 条件下可能免费，代理仍按点数预算保守记账；需要精确核账时请参考官方账户记录。
 
-服务不记录明文 Token 或 key；账号 Token 与可查看的客户端 key 以密文保存。普通同步请求不落盘提示词、图片或请求体；持久化任务为实现重启恢复，按上文所述将请求和结果写入数据卷。
+服务不记录明文 Token 或 key；账号 Token 与可查看的客户端 key 以密文保存在 SQLite。普通同步请求不落盘提示词或请求体；若管理员开启归档，成功生成的原始图片与缩略图会单独保存。持久化任务为实现重启恢复，按上文所述将请求和结果写入数据卷。
