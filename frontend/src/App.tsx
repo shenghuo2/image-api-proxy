@@ -3,11 +3,11 @@ import { Button } from '@astryxdesign/core/Button'
 import {
   ArrowRight, BarChart3, Check, Clock3, Copy, CreditCard,
   KeyRound, LayoutDashboard, LockKeyhole, LogOut, Pencil, Plus,
-  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw,
+  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw, Users,
 } from 'lucide-react'
-import { api, apiAddress, ApiError, type AdminQuota, type AdminSettings, type ClientKey, type KeyPolicy } from './api'
+import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQuota, type AdminSettings, type ClientKey, type KeyPolicy } from './api'
 
-type View = 'overview' | 'keys' | 'usage' | 'settings'
+type View = 'overview' | 'accounts' | 'keys' | 'usage' | 'settings'
 type DialogState =
   | { type: 'create' }
   | { type: 'edit'; key: ClientKey }
@@ -15,6 +15,9 @@ type DialogState =
   | { type: 'revoke'; key: ClientKey }
   | { type: 'rotate'; key: ClientKey }
   | { type: 'reveal'; key: string; name: string }
+  | { type: 'account-create' }
+  | { type: 'account-edit'; account: Account }
+  | { type: 'account-delete'; account: Account }
   | null
 
 const sessionKey = 'novelai-proxy-admin-key'
@@ -78,6 +81,7 @@ function Login({ onConnect, busy, error }: { onConnect: (key: string) => Promise
 function Sidebar({ view, setView, quota, onLogout }: { view: View; setView: (view: View) => void; quota: AdminQuota | null; onLogout: () => void }) {
   const items: { id: View; label: string; icon: ReactNode }[] = [
     { id: 'overview', label: '概览', icon: <LayoutDashboard size={18} /> },
+    { id: 'accounts', label: '账号管理', icon: <Users size={18} /> },
     { id: 'keys', label: '密钥管理', icon: <KeyRound size={18} /> },
     { id: 'usage', label: '用量统计', icon: <BarChart3 size={18} /> },
     { id: 'settings', label: '配置', icon: <Settings size={18} /> },
@@ -89,7 +93,7 @@ function Sidebar({ view, setView, quota, onLogout }: { view: View; setView: (vie
       {items.map((item) => <button type="button" key={item.id} className={view === item.id ? 'active' : ''} aria-current={view === item.id ? 'page' : undefined} title={item.label} aria-label={item.label} onClick={() => setView(item.id)}>{item.icon}<span>{item.label}</span></button>)}
     </nav>
     <div className="side-spacer" />
-    <div className="side-account"><span className="status-dot" /> <span>{quota ? `NovelAI Tier ${quota.tier}` : '服务账户'}</span></div>
+    <div className="side-account"><span className="status-dot" /> <span>{quota ? `${quota.account_quotas?.length ?? 1} 个服务账号` : '服务账户'}</span></div>
     <button type="button" className="logout" onClick={onLogout}><LogOut size={17} /> 退出管理</button>
   </aside>
 }
@@ -106,15 +110,17 @@ function QuotaBand({ quota, error, onRefresh, refreshing }: { quota: AdminQuota 
   return <section className="page-section quota-section">
     <div className="section-heading"><div><span className="eyebrow">UPSTREAM QUOTA</span><h2>服务账户额度</h2></div><Button label="刷新官方额度" variant="secondary" size="sm" icon={<RefreshCw size={15} />} onClick={onRefresh} isLoading={refreshing} /></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
+    {quota && (quota.account_errors?.length ?? 0) > 0 && <div className="inline-alert" role="alert">{quota.account_errors?.map((item) => item.name).join('、')} 的官方额度暂不可用</div>}
     <div className="quota-grid">
       {rows.map((row) => <div className="quota-column" key={row.label}><div className="quota-name"><span className={`legend-dot ${row.tone}`} />{row.label}</div><strong>{quota ? fmt(row.projected) : '—'}</strong><span className="quota-caption">预计可用</span><div className="quota-track"><span className={row.tone} style={{ width: `${clampPercent(row.allocated, row.projected)}%` }} /></div><div className="quota-meta"><span>有限分配 <b>{quota ? fmt(row.allocated) : '—'}</b></span><span>未预留 <b>{quota ? fmt(row.available) : '—'}</b></span></div>{row.unlimited > 0 && <div className="quota-caption">{fmt(row.unlimited)} 把不限额度密钥共享余额</div>}</div>)}
-      <div className="quota-column opus-column"><div className="quota-name"><span className="legend-dot purple" />Opus 配额</div><strong>{quota ? `${Math.max(0, quota.projected_opus_percent).toFixed(1)}%` : '—'}</strong><span className="quota-caption">预计剩余</span><div className="opus-meter"><span style={{ width: `${Math.min(100, Math.max(0, quota?.projected_opus_percent ?? 0))}%` }} /></div><div className="quota-meta"><span>{quota ? `Tier ${quota.tier}` : '未连接'}</span><span>{quota?.active ? '订阅有效' : quota?.isGracePeriod ? '宽限期' : '订阅未激活'}</span></div></div>
+      <div className="quota-column opus-column"><div className="quota-name"><span className="legend-dot purple" />Opus 配额</div><strong>{quota ? (quota.account_quotas?.length ?? 1) > 1 ? `${quota.account_quotas.length} 个账号` : `${Math.max(0, quota.projected_opus_percent).toFixed(1)}%` : '—'}</strong><span className="quota-caption">{quota && (quota.account_quotas?.length ?? 1) > 1 ? '各账号配额独立' : '预计剩余'}</span><div className="opus-meter"><span style={{ width: `${quota && (quota.account_quotas?.length ?? 1) > 1 ? 100 : Math.min(100, Math.max(0, quota?.projected_opus_percent ?? 0))}%` }} /></div><div className="quota-meta"><span>{quota && (quota.account_quotas?.length ?? 1) > 1 ? '在账号管理中查看明细' : quota ? `Tier ${quota.tier}` : '未连接'}</span><span>{quota?.active ? '订阅有效' : quota?.isGracePeriod ? '宽限期' : '订阅未激活'}</span></div></div>
     </div>
   </section>
 }
 
 function KeyIdentity({ item }: { item: ClientKey }) {
-  return <div className="key-identity"><span className={`key-avatar ${item.revoked ? 'muted' : ''}`}>{item.name.slice(0, 1).toUpperCase()}</span><span className="key-ident-text"><strong>{item.name}</strong><small>{item.id}</small></span></div>
+  const accountLabel = item.account_name ?? (item.account_id === 'pool' ? '账号池' : item.account_id === 'default' ? '默认账号' : item.account_id)
+  return <div className="key-identity"><span className={`key-avatar ${item.revoked ? 'muted' : ''}`}>{item.name.slice(0, 1).toUpperCase()}</span><span className="key-ident-text"><strong>{item.name}</strong><small>{item.id} · {accountLabel}</small></span></div>
 }
 
 function UsageBars({ keys, metric = 'anlas', limit = 6 }: { keys: ClientKey[]; metric?: 'anlas' | 'fixed' | 'purchased' | 'opus'; limit?: number }) {
@@ -144,6 +150,27 @@ function Overview({ keys, quota, quotaError, onRefreshQuota, refreshingQuota, se
     </div>
     <QuotaBand quota={quota} error={quotaError} onRefresh={onRefreshQuota} refreshing={refreshingQuota} />
     <section className="page-section overview-usage"><div className="section-heading"><div><span className="eyebrow">KEY CONSUMPTION</span><h2>密钥用量排行</h2></div><button className="text-link" type="button" onClick={() => setView('usage')}>查看全部 <ArrowRight size={16} /></button></div><UsageBars keys={keys} /></section>
+  </>
+}
+
+function AccountsPage({ accounts, keys, quota, busy, onCreate, onEdit, onDelete, onRefresh }: { accounts: Account[]; keys: ClientKey[]; quota: AdminQuota | null; busy: boolean; onCreate: () => void; onEdit: (account: Account) => void; onDelete: (account: Account) => void; onRefresh: (account: Account) => void }) {
+  const quotas = new Map((quota?.account_quotas ?? []).map((item) => [item.account_id, item]))
+  const errors = new Set((quota?.account_errors ?? []).map((item) => item.account_id))
+  return <>
+    <div className="page-intro"><div><span className="eyebrow">UPSTREAM ACCOUNTS</span><h1>账号管理</h1><p>{fmt(accounts.filter((item) => item.enabled).length)} 个已启用账号</p></div><Button label="添加账号" variant="primary" icon={<Plus size={17} />} onClick={onCreate} /></div>
+    <section className="page-section"><div className="section-heading"><div><h2>NovelAI 账号</h2></div></div>
+      <div className="account-list">{accounts.map((account) => {
+        const item: AccountQuota | undefined = quotas.get(account.id)
+        return <div className="account-row" key={account.id}>
+          <div className="account-name"><strong>{account.name}</strong><small>{account.id} · {fmt(account.key_count)} 把固定密钥</small></div>
+          <span className={`status-badge ${account.enabled ? 'active' : 'revoked'}`}>{account.enabled ? '已启用' : '已停用'}</span>
+          <div className="account-balances"><span>订阅点数 <b>{item ? fmt(item.projected_fixed_anlas) : '—'}</b></span><span>付费购入点数 <b>{item ? fmt(item.projected_purchased_anlas) : '—'}</b></span><span>Opus 配额 <b>{item ? `${item.projected_opus_percent.toFixed(1)}%` : '—'}</b></span></div>
+          <div className="account-state">{!account.token_configured ? 'Token 无法解密' : errors.has(account.id) ? '官方额度暂不可用' : item ? `Tier ${item.tier} · ${item.snapshot_age_seconds} 秒前更新` : account.enabled ? '等待额度同步' : '已暂停使用'}</div>
+          <div className="row-actions"><IconAction label={`刷新 ${account.name} 额度`} icon={<RefreshCw size={16} />} onClick={() => onRefresh(account)} disabled={!account.enabled || busy} /><IconAction label={`编辑 ${account.name}`} icon={<Pencil size={16} />} onClick={() => onEdit(account)} /><IconAction label={`删除 ${account.name}`} icon={<Trash2 size={16} />} onClick={() => onDelete(account)} disabled={account.key_count > 0 || (accounts.length === 1 && keys.some((key) => !key.revoked && key.account_id === 'pool'))} danger /></div>
+        </div>
+      })}</div>
+      {!accounts.length && <div className="empty-state">尚未添加账号</div>}
+    </section>
   </>
 }
 
@@ -191,11 +218,11 @@ function SettingsPage({ settings, busy, onChange }: { settings: AdminSettings | 
   </>
 }
 
-const emptyPolicy: KeyPolicy = { name: '', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_mode: 'images', opus_limit_percent: 0, opus_limit_images: 0, allow_multi_image: false }
+const emptyPolicy: KeyPolicy = { name: '', account_id: 'pool', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_mode: 'images', opus_limit_percent: 0, opus_limit_images: 0, allow_multi_image: false }
 
-function KeyForm({ existing, multiImageAvailable, busy, error, onSave, onClose }: { existing?: ClientKey; multiImageAvailable: boolean; busy: boolean; error: string | null; onSave: (policy: KeyPolicy) => Promise<void>; onClose: () => void }) {
+function KeyForm({ existing, accounts, multiImageAvailable, busy, error, onSave, onClose }: { existing?: ClientKey; accounts: Account[]; multiImageAvailable: boolean; busy: boolean; error: string | null; onSave: (policy: KeyPolicy) => Promise<void>; onClose: () => void }) {
   const [policy, setPolicy] = useState<KeyPolicy>(existing ? {
-    name: existing.name, allow_fixed_anlas: existing.allow_fixed_anlas, fixed_anlas_limit: existing.fixed_anlas_limit,
+    name: existing.name, account_id: existing.account_id, allow_fixed_anlas: existing.allow_fixed_anlas, fixed_anlas_limit: existing.fixed_anlas_limit,
     allow_purchased_anlas: existing.allow_purchased_anlas, purchased_anlas_limit: existing.purchased_anlas_limit,
     allow_opus: existing.allow_opus, opus_limit_mode: existing.opus_limit_mode, opus_limit_percent: existing.opus_limit_percent, opus_limit_images: existing.opus_limit_images, allow_multi_image: existing.allow_multi_image,
   } : emptyPolicy)
@@ -206,6 +233,7 @@ function KeyForm({ existing, multiImageAvailable, busy, error, onSave, onClose }
   }
   return <form className="policy-form" onSubmit={submit}>
     <div className="field"><label htmlFor="key-name">名称</label><input id="key-name" value={policy.name} maxLength={80} onChange={(event) => update('name', event.target.value)} placeholder="例如：生产环境" required autoFocus /></div>
+    <div className="field"><label htmlFor="key-account">上游账号</label><select id="key-account" value={policy.account_id} onChange={(event) => update('account_id', event.target.value)} disabled={Boolean(existing && existing.spent_anlas + existing.opus_used_images > 0)}><option value="pool">已启用账号轮询</option>{accounts.map((account) => <option key={account.id} value={account.id} disabled={!account.enabled && policy.account_id !== account.id}>{account.name}{account.enabled ? '' : '（已停用）'}</option>)}</select></div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>订阅点数</strong><small>订阅获得的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_fixed_anlas} onChange={(event) => update('allow_fixed_anlas', event.target.checked)} aria-label="允许使用订阅点数" /><span /></label></div><div className="field inline"><label htmlFor="fixed-limit">累计上限（-1 为不限）</label><input id="fixed-limit" type="number" min="-1" max="1000000000" step="1" value={policy.fixed_anlas_limit} onChange={(event) => update('fixed_anlas_limit', Number(event.target.value))} /></div></div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>付费购入点数</strong><small>另行购买的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_purchased_anlas} onChange={(event) => update('allow_purchased_anlas', event.target.checked)} aria-label="允许使用付费购入点数" /><span /></label></div><div className="field inline"><label htmlFor="purchased-limit">累计上限（-1 为不限）</label><input id="purchased-limit" type="number" min="-1" max="1000000000" step="1" value={policy.purchased_anlas_limit} onChange={(event) => update('purchased_anlas_limit', Number(event.target.value))} /></div></div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>Opus 配额</strong><small>此密钥可用的免费生成次数</small></div><label className="switch"><input type="checkbox" checked={policy.allow_opus} onChange={(event) => update('allow_opus', event.target.checked)} aria-label="允许使用 Opus 配额" /><span /></label></div><div className="segmented policy-segmented" role="group" aria-label="Opus 限制方式"><button type="button" aria-pressed={policy.opus_limit_mode === 'images'} className={policy.opus_limit_mode === 'images' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'images')}>按次数</button><button type="button" aria-pressed={policy.opus_limit_mode === 'percent'} className={policy.opus_limit_mode === 'percent' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'percent')}>按满额比例</button></div>{policy.opus_limit_mode === 'images' ? <div className="field inline"><label htmlFor="opus-limit">累计上限（-1 为不限）</label><input id="opus-limit" type="number" min="-1" max="10000000" step="1" value={policy.opus_limit_images} onChange={(event) => update('opus_limit_images', Number(event.target.value))} /></div> : <div className="field inline"><label htmlFor="opus-percent">满额比例（约 {fmt(Math.floor(policy.opus_limit_percent * 1730 / 100))} 次）</label><input id="opus-percent" type="number" min="0" max="100" step="0.1" value={policy.opus_limit_percent} onChange={(event) => update('opus_limit_percent', Number(event.target.value))} /></div>}</div>
@@ -215,10 +243,24 @@ function KeyForm({ existing, multiImageAvailable, busy, error, onSave, onClose }
   </form>
 }
 
+function AccountForm({ existing, busy, error, onSave, onClose }: { existing?: Account; busy: boolean; error: string | null; onSave: (input: { name: string; token: string; enabled: boolean }) => Promise<void>; onClose: () => void }) {
+  const [name, setName] = useState(existing?.name ?? '')
+  const [token, setToken] = useState('')
+  const [enabled, setEnabled] = useState(existing?.enabled ?? true)
+  return <form className="policy-form" onSubmit={(event) => { event.preventDefault(); void onSave({ name: name.trim(), token: token.trim(), enabled }) }}>
+    <div className="field"><label htmlFor="account-name">账号名称</label><input id="account-name" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} required autoFocus /></div>
+    <div className="field"><label htmlFor="account-token">{existing ? '替换 Token（可选）' : 'NovelAI Token'}</label><input id="account-token" type="password" value={token} minLength={16} onChange={(event) => setToken(event.target.value)} autoComplete="off" required={!existing} /></div>
+    <div className="policy-row"><div className="policy-row-top"><strong>启用账号</strong><label className="switch"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} aria-label="启用账号" /><span /></label></div></div>
+    {error && <div className="form-error" role="alert">{error}</div>}
+    <div className="modal-actions"><Button label="取消" variant="secondary" onClick={onClose} /><Button label={existing ? '保存更改' : '添加账号'} variant="primary" type="submit" isLoading={busy} /></div>
+  </form>
+}
+
 export function App() {
   const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem(sessionKey) || '')
   const [view, setView] = useState<View>('overview')
   const [keys, setKeys] = useState<ClientKey[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
   const [quota, setQuota] = useState<AdminQuota | null>(null)
   const [settings, setSettings] = useState<AdminSettings | null>(null)
   const [quotaError, setQuotaError] = useState<string | null>(null)
@@ -234,6 +276,7 @@ export function App() {
     sessionStorage.removeItem(sessionKey)
     setAdminKey('')
     setKeys([])
+    setAccounts([])
     setQuota(null)
     setSettings(null)
     setError(null)
@@ -242,7 +285,7 @@ export function App() {
 
   const load = useCallback(async (key: string) => {
     setLoading(true)
-    const [keyResult, quotaResult, settingsResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key)])
+    const [keyResult, quotaResult, settingsResult, accountResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key), api.accounts(key)])
     if (keyResult.status === 'rejected') {
       if (keyResult.reason instanceof ApiError && keyResult.reason.status === 401) logout()
       else setError(describeError(keyResult.reason))
@@ -259,6 +302,8 @@ export function App() {
     }
     if (settingsResult.status === 'fulfilled') setSettings(settingsResult.value)
     else setError(describeError(settingsResult.reason))
+    if (accountResult.status === 'fulfilled') setAccounts(accountResult.value)
+    else setError(describeError(accountResult.reason))
     setLoading(false)
   }, [logout])
 
@@ -292,6 +337,29 @@ export function App() {
 
   const changeMultiImage = (enabled: boolean) => mutate(async () => {
     setSettings(await api.updateSettings(adminKey, { allow_multi_image: enabled }))
+  })
+
+  const startCreateKey = () => {
+    if (accounts.some((account) => account.enabled)) setDialog({ type: 'create' })
+    else setView('accounts')
+  }
+
+  const saveAccount = async (input: { name: string; token: string; enabled: boolean }) => mutate(async () => {
+    if (dialog?.type === 'account-edit') await api.updateAccount(adminKey, dialog.account.id, input)
+    else await api.createAccount(adminKey, input)
+    setDialog(null)
+    await load(adminKey)
+  })
+
+  const deleteAccount = (account: Account) => mutate(async () => {
+    await api.deleteAccount(adminKey, account.id)
+    setDialog(null)
+    await load(adminKey)
+  })
+
+  const refreshAccount = (account: Account) => mutate(async () => {
+    await api.refreshAccountQuota(adminKey, account.id)
+    await load(adminKey)
   })
 
   const savePolicy = async (policy: KeyPolicy) => mutate(async () => {
@@ -331,16 +399,19 @@ export function App() {
   return <div className="app-shell">
     <Sidebar view={view} setView={setView} quota={quota} onLogout={logout} />
     <div className="main-shell">
-      <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
+      <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'accounts' ? '账号管理' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
       <main className="content">
         {error && <div className="inline-alert page-alert" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={16} /></button></div>}
-        {view === 'overview' && <Overview keys={keys} quota={quota} quotaError={quotaError} onRefreshQuota={() => void refreshQuota()} refreshingQuota={refreshingQuota} setView={setView} onCreate={() => setDialog({ type: 'create' })} />}
-        {view === 'keys' && <KeysPage keys={keys} onCreate={() => setDialog({ type: 'create' })} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} onReveal={(key) => { if (key.key) { setCopied(false); setDialog({ type: 'reveal', key: key.key, name: key.name }) } }} onRotate={(key) => setDialog({ type: 'rotate', key })} />}
+        {view === 'overview' && <Overview keys={keys} quota={quota} quotaError={quotaError} onRefreshQuota={() => void refreshQuota()} refreshingQuota={refreshingQuota} setView={setView} onCreate={startCreateKey} />}
+        {view === 'accounts' && <AccountsPage accounts={accounts} keys={keys} quota={quota} busy={busy} onCreate={() => setDialog({ type: 'account-create' })} onEdit={(account) => setDialog({ type: 'account-edit', account })} onDelete={(account) => setDialog({ type: 'account-delete', account })} onRefresh={(account) => void refreshAccount(account)} />}
+        {view === 'keys' && <KeysPage keys={keys} onCreate={startCreateKey} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} onReveal={(key) => { if (key.key) { setCopied(false); setDialog({ type: 'reveal', key: key.key, name: key.name }) } }} onRotate={(key) => setDialog({ type: 'rotate', key })} />}
         {view === 'usage' && <UsagePage keys={keys} />}
         {view === 'settings' && <SettingsPage settings={settings} busy={busy} onChange={(enabled) => void changeMultiImage(enabled)} />}
       </main>
     </div>
-    {(dialog?.type === 'create' || dialog?.type === 'edit') && <Modal title={dialog.type === 'create' ? '签发密钥' : `编辑 ${dialog.key.name}`} onClose={() => setDialog(null)}><KeyForm existing={dialog.type === 'edit' ? dialog.key : undefined} multiImageAvailable={settings?.allow_multi_image ?? false} busy={busy} error={error} onSave={savePolicy} onClose={() => setDialog(null)} /></Modal>}
+    {(dialog?.type === 'create' || dialog?.type === 'edit') && <Modal title={dialog.type === 'create' ? '签发密钥' : `编辑 ${dialog.key.name}`} onClose={() => setDialog(null)}><KeyForm existing={dialog.type === 'edit' ? dialog.key : undefined} accounts={accounts} multiImageAvailable={settings?.allow_multi_image ?? false} busy={busy} error={error} onSave={savePolicy} onClose={() => setDialog(null)} /></Modal>}
+    {(dialog?.type === 'account-create' || dialog?.type === 'account-edit') && <Modal title={dialog.type === 'account-create' ? '添加账号' : `编辑 ${dialog.account.name}`} onClose={() => setDialog(null)}><AccountForm existing={dialog.type === 'account-edit' ? dialog.account : undefined} busy={busy} error={error} onSave={saveAccount} onClose={() => setDialog(null)} /></Modal>}
+    {dialog?.type === 'account-delete' && <Modal title="删除账号" onClose={() => setDialog(null)}><div className="modal-body"><p>确认删除 <strong>{dialog.account.name}</strong>？账号 Token 将从服务端移除。</p><div className="modal-actions"><Button label="取消" variant="secondary" onClick={() => setDialog(null)} /><Button label="删除账号" variant="destructive" isLoading={busy} onClick={() => void deleteAccount(dialog.account)} /></div></div></Modal>}
     {dialog?.type === 'revoke' && <Modal title="撤销密钥" onClose={() => setDialog(null)}><div className="modal-body"><p>确认撤销 <strong>{dialog.key.name}</strong>？该密钥将立即无法访问代理。</p><div className="modal-actions"><Button label="取消" variant="secondary" onClick={() => setDialog(null)} /><Button label="撤销密钥" variant="destructive" isLoading={busy} onClick={() => void revoke(dialog.key)} /></div></div></Modal>}
     {dialog?.type === 'rotate' && <Modal title="轮换密钥" onClose={() => setDialog(null)}><div className="modal-body"><p>确认轮换 <strong>{dialog.key.name}</strong>？旧密钥会立即失效；额度和累计用量保留。</p><div className="modal-actions"><Button label="取消" variant="secondary" onClick={() => setDialog(null)} /><Button label="轮换密钥" variant="primary" isLoading={busy} onClick={() => void rotate(dialog.key)} /></div></div></Modal>}
     {dialog?.type === 'reconcile' && <ReconcileModal item={dialog.key} busy={busy} error={error} onClose={() => setDialog(null)} onSave={(charged, opus) => reconcile(dialog.key, charged, opus)} />}

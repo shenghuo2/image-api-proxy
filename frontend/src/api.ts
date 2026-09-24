@@ -1,6 +1,8 @@
 export interface ClientKey {
   id: string
   name: string
+  account_id: string
+  account_name?: string
   allow_fixed_anlas: boolean
   fixed_anlas_limit: number
   fixed_anlas_spent: number
@@ -49,10 +51,39 @@ export interface AdminQuota {
   unlimited_fixed_keys: number
   unlimited_purchased_keys: number
   unlimited_opus_keys: number
+  account_quotas: AccountQuota[]
+  account_errors: { account_id: string; name: string }[]
+}
+
+export interface Account {
+  id: string
+  name: string
+  enabled: boolean
+  token_configured: boolean
+  key_count: number
+}
+
+export interface AccountQuota {
+  account_id: string
+  name: string
+  upstream_fixed_anlas: number
+  upstream_purchased_anlas: number
+  projected_fixed_anlas: number
+  projected_purchased_anlas: number
+  allocated_fixed_anlas: number
+  allocated_purchased_anlas: number
+  unallocated_fixed_anlas: number
+  unallocated_purchased_anlas: number
+  projected_opus_percent: number
+  active: boolean
+  isGracePeriod: boolean
+  tier: number
+  snapshot_age_seconds: number
 }
 
 export interface KeyPolicy {
   name: string
+  account_id: string
   allow_fixed_anlas: boolean
   fixed_anlas_limit: number
   allow_purchased_anlas: boolean
@@ -105,6 +136,11 @@ async function request<T>(key: string, path: string, method = 'GET', body?: unkn
 }
 
 export const api = {
+  accounts: (key: string) => request<Account[]>(key, '/admin/accounts'),
+  createAccount: (key: string, input: { name: string; token: string; enabled: boolean }) => request<Account>(key, '/admin/accounts', 'POST', input),
+  updateAccount: (key: string, id: string, input: { name?: string; token?: string; enabled?: boolean }) => request<Account>(key, `/admin/accounts/${id}`, 'PUT', input),
+  deleteAccount: (key: string, id: string) => request<void>(key, `/admin/accounts/${id}`, 'DELETE'),
+  refreshAccountQuota: (key: string, id: string) => request<AccountQuota>(key, `/admin/accounts/${id}/quota/refresh`, 'POST'),
   settings: (key: string) => request<AdminSettings>(key, '/admin/settings'),
   updateSettings: (key: string, settings: AdminSettings) => request<AdminSettings>(key, '/admin/settings', 'PUT', settings),
   keys: (key: string) => request<ClientKey[]>(key, '/admin/keys'),
