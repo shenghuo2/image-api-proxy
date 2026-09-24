@@ -253,4 +253,40 @@ button:disabled { cursor: not-allowed; }
 @media (max-width: 360px) {
   .metric-grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-grid.three .metric:last-child { grid-column: span 2; min-height: 115px; }
+  .sidebar { padding: 0 7px; }
+  .side-nav { margin: 0 3px; }
+  .side-nav button { width: 29px; min-width: 29px; padding: 0 2px; }
+  .sidebar .logout { width: 30px; }
 }
+
+.archive-stats { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0 0 22px; padding: 15px 0; border-top: 1px solid #e4e9ed; border-bottom: 1px solid #e4e9ed; color: #64727e; font-size: 13px; }
+.archive-stats span { display: flex; align-items: baseline; gap: 8px; }
+.archive-stats strong { color: #1e2932; font-size: 16px; }
+.archive-tool, .archive-actions button, .archive-preview header button { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid #dce3e8; border-radius: 6px; background: #fff; color: #344350; cursor: pointer; }
+.archive-tool:hover, .archive-actions button:hover, .archive-preview header button:hover { border-color: #8cabb9; color: #08657d; }
+.archive-filters { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 0 0 22px; }
+.archive-filters label, .archive-settings label { display: grid; gap: 6px; color: #4c5b68; font-size: 12px; font-weight: 600; }
+.archive-filters input, .archive-filters select, .archive-settings input { width: 100%; min-width: 0; height: 37px; padding: 0 10px; border: 1px solid #d7dfe5; border-radius: 5px; background: #fff; color: #263540; font: inherit; }
+.archive-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(205px,1fr)); gap: 14px; }
+.archive-item { min-width: 0; overflow: hidden; border: 1px solid #e1e7eb; border-radius: 7px; background: #fff; }
+.archive-image { display: grid; place-items: center; height: 190px; background: #f2f5f6; }
+.archive-image img { width: 100%; height: 100%; object-fit: contain; }
+.archive-placeholder { display: grid; place-items: center; color: #a2b1b8; }
+.archive-item-body { display: grid; gap: 6px; padding: 12px; }
+.archive-item-body strong, .archive-item-body small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.archive-item-body strong { color: #24343d; font-size: 13px; }
+.archive-item-body small { color: #70808b; font-size: 11px; }
+.archive-actions { display: flex; gap: 7px; margin-top: 5px; }
+.archive-actions button:last-child { margin-left: auto; color: #a53939; }
+.archive-pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 22px; color: #637481; font-size: 12px; }
+.archive-pager div { display: flex; gap: 7px; }
+.archive-pager button, .archive-settings button { height: 34px; padding: 0 12px; border: 1px solid #d8e0e5; border-radius: 5px; background: #fff; color: #2b4653; cursor: pointer; }
+.archive-pager button:disabled, .archive-settings button:disabled { opacity: .5; cursor: default; }
+.archive-settings { display: grid; grid-template-columns: repeat(2,minmax(0,180px)) auto; align-items: end; gap: 12px; margin-top: 20px; }
+.archive-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(12,25,33,.78); }
+.archive-preview { display: flex; flex-direction: column; max-width: 95vw; max-height: 95vh; min-width: min(480px,90vw); padding: 12px; border-radius: 7px; background: #fff; }
+.archive-preview header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 10px; }
+.archive-preview img { min-width: 0; min-height: 0; max-width: 90vw; max-height: calc(95vh - 68px); object-fit: contain; }
+.archive-preview p { padding: 60px 30px; color: #64727e; text-align: center; }
+@media (max-width: 700px) { .archive-filters { grid-template-columns: repeat(2,minmax(0,1fr)); } .archive-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 480px) { .archive-filters, .archive-grid { grid-template-columns: 1fr; } .archive-settings { grid-template-columns: repeat(2,minmax(0,1fr)); } .archive-settings button { grid-column: 1 / -1; } }

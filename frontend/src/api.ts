@@ -15,6 +15,7 @@ export interface ClientKey {
   purchased_anlas_remaining: number
   allow_opus: boolean
   allow_multi_image: boolean
+  archive_enabled: boolean
   opus_limit_mode: 'images' | 'percent'
   opus_limit_percent: number
   opus_limit_images: number
@@ -91,6 +92,7 @@ export interface KeyPolicy {
   purchased_anlas_limit: number
   allow_opus: boolean
   allow_multi_image: boolean
+  archive_enabled: boolean
   opus_limit_mode: 'images' | 'percent'
   opus_limit_percent: number
   opus_limit_images: number
@@ -99,7 +101,24 @@ export interface KeyPolicy {
 
 export interface AdminSettings {
   allow_multi_image: boolean
+  archive_enabled: boolean
+  archive_retention_days: number
+  archive_max_bytes: number
 }
+
+export interface ArchiveImage {
+  id: string
+  group_id: string
+  group_size: number
+  key_id: string
+  key_name: string
+  ip: string
+  created_at: string
+  bytes: number
+}
+
+export interface ArchiveList { items: ArchiveImage[]; total: number; page: number; page_size: number }
+export interface ArchiveStats { count: number; bytes: number; pending: number; failures: number; last_error: string }
 
 export interface QueueEntry {
   id?: string
@@ -160,7 +179,10 @@ export const api = {
   deleteAccount: (key: string, id: string) => request<void>(key, `/admin/accounts/${id}`, 'DELETE'),
   refreshAccountQuota: (key: string, id: string) => request<AccountQuota>(key, `/admin/accounts/${id}/quota/refresh`, 'POST'),
   settings: (key: string) => request<AdminSettings>(key, '/admin/settings'),
-  updateSettings: (key: string, settings: AdminSettings) => request<AdminSettings>(key, '/admin/settings', 'PUT', settings),
+  updateSettings: (key: string, settings: Partial<AdminSettings>) => request<AdminSettings>(key, '/admin/settings', 'PUT', settings),
+  images: (key: string, params: URLSearchParams) => request<ArchiveList>(key, `/admin/images?${params}`),
+  imageStats: (key: string) => request<ArchiveStats>(key, '/admin/images/stats'),
+  deleteImage: (key: string, id: string) => request<void>(key, `/admin/images/${id}`, 'DELETE'),
   keys: (key: string) => request<ClientKey[]>(key, '/admin/keys'),
   quota: (key: string) => request<AdminQuota>(key, '/admin/quota'),
   queue: (key: string) => request<QueueState>(key, '/admin/queue'),
@@ -170,6 +192,12 @@ export const api = {
   revokeKey: (key: string, id: string) => request<void>(key, `/admin/keys/${id}`, 'DELETE'),
   rotateKey: (key: string, id: string) => request<{ key: string; client: ClientKey }>(key, `/admin/keys/${id}/rotate`, 'POST'),
   reconcile: (key: string, id: string, charged: number, opus: number) => request<ClientKey>(key, `/admin/keys/${id}/reconcile`, 'POST', { charged_anlas: charged, opus_charged_images: opus }),
+}
+
+export async function imageBlob(key: string, id: string, kind: 'thumbnail' | 'original'): Promise<Blob> {
+  const response = await fetch(`${baseUrl}/admin/images/${id}/${kind}`, { headers: { Authorization: `Bearer ${key}` }, cache: 'no-store' })
+  if (!response.ok) throw new ApiError(response.status, `图片加载失败 (${response.status})`)
+  return response.blob()
 }
 
 export const apiAddress = baseUrl || window.location.origin
