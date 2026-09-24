@@ -13,7 +13,8 @@ button:disabled { cursor: not-allowed; }
 .app-shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { position: sticky; top: 0; display: flex; flex-direction: column; height: 100vh; padding: 24px 14px 18px; border-right: 1px solid #e5e9ef; background: #fff; z-index: 5; }
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; color: #141922; }
-.brand-mark { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 8px; background: #1462e8; color: #fff; }
+.brand-mark { display: block; width: 34px; height: 34px; flex: 0 0 34px; }
+.brand-mark img { display: block; width: 100%; height: 100%; }
 .brand-text { display: block; font-size: 15px; font-weight: 650; line-height: 1.04; white-space: nowrap; }
 .brand-text strong { font-weight: 700; }
 .brand-text small { display: block; margin-top: 4px; color: #8490a0; font-size: 9px; font-weight: 750; letter-spacing: 1.4px; }

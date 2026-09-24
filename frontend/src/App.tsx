@@ -40,7 +40,7 @@ function IconAction({ label, icon, onClick, danger = false, disabled = false }: 
 }
 
 function Brand() {
-  return <div className="brand"><span className="brand-mark"><LayoutDashboard size={20} strokeWidth={2.5} /></span><span className="brand-text">NovelAI <strong>Proxy</strong><small>ADMIN CONSOLE</small></span></div>
+  return <div className="brand"><span className="brand-mark"><img src="/favicon.svg" alt="" /></span><span className="brand-text">NovelAI <strong>Proxy</strong><small>ADMIN CONSOLE</small></span></div>
 }
 
 function Modal({ title, children, onClose, width = 'normal' }: { title: string; children: ReactNode; onClose: () => void; width?: 'normal' | 'wide' }) {
