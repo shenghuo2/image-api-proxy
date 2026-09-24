@@ -10,7 +10,7 @@ services:
     environment:
       PROXY_LISTEN_ADDR: 0.0.0.0:8787
       PROXY_ADMIN_KEY: ${PROXY_ADMIN_KEY:?set a random admin key in .env}
-      PROXY_NAI_TOKEN: ${PROXY_NAI_TOKEN:?set your NovelAI token in .env}
+      PROXY_NAI_TOKEN: ${PROXY_NAI_TOKEN:-}
       PROXY_QUEUE_SIZE: ${PROXY_QUEUE_SIZE:-64}
       PROXY_QUOTA_TTL: ${PROXY_QUOTA_TTL:-5m}
       PROXY_ADMIN_ORIGIN: ${PROXY_ADMIN_ORIGIN:-}

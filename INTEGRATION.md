@@ -8,6 +8,8 @@
 
 由管理员在管理面板为接入项目签发一把客户端 key，开启所需的订阅点数、付费购入点数或 Opus 配额权限，并设置累计上限。建议每个项目使用独立的 key，便于撤销和查看用量。新 key 使用 `pst-` 加 24 位随机字符；管理员可在管理面板再次查看。旧版 key 需轮换后才可查看明文，轮换会使旧 key 立即失效。接入项目仍应将 key 保存在服务端密钥配置中。
 
+新 key 默认在所有已启用的服务账号之间轮询；管理员也可将它固定到一个账号。账号选择是代理内部策略，不改变客户端的官方请求格式。停用账号后，池模式会跳过它；固定在该账号的 key 会暂时不可用。
+
 本地累计上限可设为 `-1`，表示不再另设每把 key 的累计限制，实际使用仍受官方账户余额约束。Opus 可按次数或按满额百分比限制；百分比按估算满额 1730 次向下折算，例如 10% 为 173 次。
 
 接入项目只需知道代理根地址和这把客户端 key。代理在转发请求时将客户端 key 替换为服务端持有的 NovelAI Token；接入项目不需要持有官方 Token。
@@ -122,13 +124,14 @@ with open("request.json", "rb") as source:
 | --- | --- |
 | `trainingStepsLeft.fixedTrainingStepsLeft` | 该 key 仍可使用的订阅点数 |
 | `trainingStepsLeft.purchasedTrainingSteps` | 该 key 仍可使用的付费购入点数 |
-| `usage` | 共享 Opus 配额与该 key 剩余次数共同限制后的视图；无权限或次数用尽时为 `null` |
+| `usage` | 所选账号或账号池的 Opus 配额与该 key 剩余次数共同限制后的视图；无权限或次数用尽时为 `null` |
 
 代理另提供 `GET $BASE/quota`，同样使用客户端 Bearer key。它**只读取本地账本，不请求官方**，适合接入项目展示用量和剩余权限。主要字段如下：
 
 | 字段 | 含义 |
 | --- | --- |
 | `name`、`id`、`revoked` | key 备注名、管理 ID、撤销状态 |
+| `account_id` | `pool` 为已启用账号轮询，否则为固定账号 ID |
 | `allow_fixed_anlas`、`fixed_anlas_limit`、`fixed_anlas_spent`、`fixed_anlas_pending`、`fixed_anlas_remaining` | 订阅点数权限、累计上限、估算已用、待核对和本地剩余 |
 | `allow_purchased_anlas` 及对应的 `purchased_anlas_*` | 付费购入点数的同类数据 |
 | `allow_opus`、`opus_limit_images`、`opus_limit_mode`、`opus_limit_percent`、`opus_effective_limit_images`、`opus_used_images`、`opus_pending_images`、`opus_remaining_images` | Opus 免费生成权限、限制模式和次数；百分比按满额约 1730 次折算 |
@@ -163,6 +166,7 @@ curl --fail-with-body -sS "$BASE/user/subscription" \
 | `413` | 请求体超过 64 MiB | 减小请求体 |
 | `429` | 等待队列已满 | 读取 `Retry-After`（当前为 2 秒）并退避重试 |
 | `502` | 官方额度暂不可用，或转发上游失败 | 稍后检查服务状态；不要密集重试 |
+| `503` | 固定绑定的账号已停用，或账号池中没有启用账号 | 联系管理员启用或更换账号 |
 
 生成请求转发到官方后，官方的状态码和响应体会直接返回。**不要对已经提交、随后超时或得到 5xx 的生成请求做无条件自动重试**：官方是否已生成以及是否扣费可能无法确认，代理会把预留额保留为“待核对”。明确的上游 4xx 会退回预留额，待核对记录可由管理员在管理面板处理。
 
