@@ -41,6 +41,7 @@ type ManagedHandler struct {
 	adminOrigin      string
 	token            string
 	store            *keyStore
+	vault            keyVault
 	settings         *settingsStore
 	queue            chan ticket
 	client           *http.Client
@@ -101,6 +102,7 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		adminOrigin: cfg.AdminOrigin,
 		token:       cfg.NovelAIToken,
 		store:       store,
+		vault:       newKeyVault(cfg.AdminKey),
 		settings:    settings,
 		queue:       make(chan ticket, cfg.QueueSize),
 		client:      &http.Client{Transport: transport, Timeout: 25 * time.Second},
@@ -252,7 +254,7 @@ type quotaSnapshot struct {
 }
 
 func (q *quotaSnapshot) projectedOpusPercent() float64 {
-	return math.Max(0, q.Official.OpusPercent-float64(q.OpusJobsSinceRefresh)*100/1730)
+	return math.Max(0, q.Official.OpusPercent-float64(q.OpusJobsSinceRefresh)*100/opusFullImages)
 }
 
 // currentQuota is called only while the FIFO worker owns the request.
@@ -333,9 +335,15 @@ func jsonReply(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func (h *ManagedHandler) serveClientQuota(w http.ResponseWriter, _ *http.Request, key clientKey) {
+func (h *ManagedHandler) serveClientQuota(w http.ResponseWriter, r *http.Request, key clientKey) {
+	raw, _ := bearerToken(r)
+	current, ok := h.store.find(raw)
+	if !ok || current.ID != key.ID {
+		http.Error(w, "key unavailable", http.StatusUnauthorized)
+		return
+	}
 	for _, latest := range h.store.snapshot() {
-		if latest.ID == key.ID && !latest.Revoked {
+		if latest.ID == key.ID && latest.Hash == current.Hash && !latest.Revoked {
 			view := viewKey(latest)
 			view.QueueLength = len(h.queue)
 			jsonReply(w, http.StatusOK, view)
@@ -352,13 +360,19 @@ func (h *ManagedHandler) serveSubscription(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer release()
+	raw, _ := bearerToken(r)
+	current, ok := h.store.find(raw)
+	if !ok || current.ID != key.ID {
+		http.Error(w, "key unavailable", http.StatusUnauthorized)
+		return
+	}
 	q, err := h.currentQuota(r.Context(), false)
 	if err != nil {
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
 	}
 	for _, latest := range h.store.snapshot() {
-		if latest.ID == key.ID && !latest.Revoked {
+		if latest.ID == key.ID && latest.Hash == current.Hash && !latest.Revoked {
 			jsonReply(w, http.StatusOK, map[string]any{
 				"active": q.Official.Active, "isGracePeriod": q.Official.Grace,
 				"tier": q.Official.Tier,
@@ -393,6 +407,12 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 		return
 	}
 	defer release()
+	raw, _ := bearerToken(r)
+	currentKey, ok := h.store.find(raw)
+	if !ok || currentKey.ID != key.ID {
+		http.Error(w, "key unavailable", http.StatusUnauthorized)
+		return
+	}
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(5 * time.Minute))
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
@@ -417,7 +437,7 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 	var current clientKey
 	found := false
 	for _, candidate := range h.store.snapshot() {
-		if candidate.ID == key.ID && !candidate.Revoked {
+		if candidate.ID == key.ID && candidate.Hash == currentKey.Hash && !candidate.Revoked {
 			current, found = candidate, true
 			break
 		}
@@ -438,7 +458,7 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 	}
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
 		for i := range keys {
-			if keys[i].ID == key.ID && !keys[i].Revoked && (!cost.MultiImage || (h.settings.snapshot().AllowMultiImage && keys[i].AllowMultiImage)) && fixedRemaining(keys[i]) >= hold.Fixed && purchasedRemaining(keys[i]) >= hold.Purchased && opusRemaining(keys[i]) >= hold.Opus {
+			if keys[i].ID == key.ID && keys[i].Hash == currentKey.Hash && !keys[i].Revoked && (!cost.MultiImage || (h.settings.snapshot().AllowMultiImage && keys[i].AllowMultiImage)) && fixedRemaining(keys[i]) >= hold.Fixed && purchasedRemaining(keys[i]) >= hold.Purchased && opusRemaining(keys[i]) >= hold.Opus {
 				keys[i].FixedSpent += hold.Fixed
 				keys[i].FixedPending += hold.Fixed
 				keys[i].PurchasedSpent += hold.Purchased
@@ -505,7 +525,7 @@ func projectedUsage(q *quotaSnapshot, opusImages int64) json.RawMessage {
 	}
 	value := q.projectedOpusPercent()
 	if opusImages > 0 {
-		value = min(value, float64(opusImages)*100/1730)
+		value = min(value, float64(opusImages)*100/opusFullImages)
 	}
 	percent, _ := json.Marshal(value)
 	usage["percent"] = percent

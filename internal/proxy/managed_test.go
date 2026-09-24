@@ -390,7 +390,7 @@ func TestManagedKeysQuotaAndPersistence(t *testing.T) {
 	created := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "alice", "allocation_anlas": 40}), 201)
 	clientKey := created["key"].(string)
 	id := created["client"].(map[string]any)["id"].(string)
-	if len(clientKey) != 64 {
+	if len(clientKey) != 28 || !strings.HasPrefix(clientKey, "pst-") {
 		t.Fatal("invalid client key")
 	}
 	doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "too much", "allocation_anlas": 61}), 409)

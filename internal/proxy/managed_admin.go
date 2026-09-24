@@ -10,47 +10,76 @@ import (
 )
 
 type publicKey struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	AllowFixed         bool   `json:"allow_fixed_anlas"`
-	FixedLimit         int64  `json:"fixed_anlas_limit"`
-	FixedSpent         int64  `json:"fixed_anlas_spent"`
-	FixedPending       int64  `json:"fixed_anlas_pending"`
-	FixedRemaining     int64  `json:"fixed_anlas_remaining"`
-	AllowPurchased     bool   `json:"allow_purchased_anlas"`
-	PurchasedLimit     int64  `json:"purchased_anlas_limit"`
-	PurchasedSpent     int64  `json:"purchased_anlas_spent"`
-	PurchasedPending   int64  `json:"purchased_anlas_pending"`
-	PurchasedRemaining int64  `json:"purchased_anlas_remaining"`
-	AllowOpus          bool   `json:"allow_opus"`
-	AllowMultiImage    bool   `json:"allow_multi_image"`
-	OpusLimit          int64  `json:"opus_limit_images"`
-	OpusUsed           int64  `json:"opus_used_images"`
-	OpusPending        int64  `json:"opus_pending_images"`
-	OpusRemaining      int64  `json:"opus_remaining_images"`
-	AllocatedAnlas     int64  `json:"allocated_anlas"`
-	SpentAnlas         int64  `json:"spent_anlas"`
-	PendingAnlas       int64  `json:"pending_anlas"`
-	RemainingAnlas     int64  `json:"remaining_anlas"`
-	QueueLength        int    `json:"queue_length,omitempty"`
-	Revoked            bool   `json:"revoked"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	AllowFixed         bool    `json:"allow_fixed_anlas"`
+	FixedLimit         int64   `json:"fixed_anlas_limit"`
+	FixedSpent         int64   `json:"fixed_anlas_spent"`
+	FixedPending       int64   `json:"fixed_anlas_pending"`
+	FixedRemaining     int64   `json:"fixed_anlas_remaining"`
+	AllowPurchased     bool    `json:"allow_purchased_anlas"`
+	PurchasedLimit     int64   `json:"purchased_anlas_limit"`
+	PurchasedSpent     int64   `json:"purchased_anlas_spent"`
+	PurchasedPending   int64   `json:"purchased_anlas_pending"`
+	PurchasedRemaining int64   `json:"purchased_anlas_remaining"`
+	AllowOpus          bool    `json:"allow_opus"`
+	AllowMultiImage    bool    `json:"allow_multi_image"`
+	OpusLimitMode      string  `json:"opus_limit_mode"`
+	OpusLimitPercent   float64 `json:"opus_limit_percent"`
+	OpusLimit          int64   `json:"opus_limit_images"`
+	OpusEffectiveLimit int64   `json:"opus_effective_limit_images"`
+	OpusUsed           int64   `json:"opus_used_images"`
+	OpusPending        int64   `json:"opus_pending_images"`
+	OpusRemaining      int64   `json:"opus_remaining_images"`
+	AllocatedAnlas     int64   `json:"allocated_anlas"`
+	SpentAnlas         int64   `json:"spent_anlas"`
+	PendingAnlas       int64   `json:"pending_anlas"`
+	RemainingAnlas     int64   `json:"remaining_anlas"`
+	QueueLength        int     `json:"queue_length,omitempty"`
+	Revoked            bool    `json:"revoked"`
+	Key                string  `json:"key,omitempty"`
 }
 
 func viewKey(k clientKey) publicKey {
 	return publicKey{
 		ID: k.ID, Name: k.Name,
 		AllowFixed: k.AllowFixed, FixedLimit: k.FixedLimit, FixedSpent: k.FixedSpent,
-		FixedPending: k.FixedPending, FixedRemaining: fixedRemaining(k),
+		FixedPending: k.FixedPending, FixedRemaining: displayRemaining(fixedRemaining(k)),
 		AllowPurchased: k.AllowPurchased, PurchasedLimit: k.PurchasedLimit,
 		PurchasedSpent: k.PurchasedSpent, PurchasedPending: k.PurchasedPending,
-		PurchasedRemaining: purchasedRemaining(k),
+		PurchasedRemaining: displayRemaining(purchasedRemaining(k)),
 		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
-		OpusPending: k.OpusPending, OpusRemaining: opusRemaining(k),
-		AllocatedAnlas: k.FixedLimit + k.PurchasedLimit,
+		OpusLimitMode: opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
+		OpusPending: k.OpusPending, OpusRemaining: displayRemaining(opusRemaining(k)),
+		AllocatedAnlas: allocatedAnlas(k),
 		SpentAnlas:     k.FixedSpent + k.PurchasedSpent,
 		PendingAnlas:   k.FixedPending + k.PurchasedPending,
 		RemainingAnlas: remaining(k), Revoked: k.Revoked,
 	}
+}
+
+func opusMode(k clientKey) string {
+	if k.OpusLimitMode == "percent" {
+		return "percent"
+	}
+	return "images"
+}
+
+func (h *ManagedHandler) viewAdminKey(k clientKey) publicKey {
+	view := viewKey(k)
+	if k.KeyCiphertext != "" {
+		if raw, err := h.vault.open(k.KeyCiphertext); err == nil && hexHash(raw) == k.Hash {
+			view.Key = raw
+		}
+	}
+	return view
+}
+
+func allocatedAnlas(k clientKey) int64 {
+	if (k.AllowFixed && k.FixedLimit == -1) || (k.AllowPurchased && k.PurchasedLimit == -1) {
+		return -1
+	}
+	return max(0, k.FixedLimit) + max(0, k.PurchasedLimit)
 }
 
 func decodeAdminBody(r *http.Request, dst any) error {
@@ -91,7 +120,7 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		keys := h.store.snapshot()
 		out := make([]publicKey, 0, len(keys))
 		for _, key := range keys {
-			out = append(out, viewKey(key))
+			out = append(out, h.viewAdminKey(key))
 		}
 		jsonReply(w, http.StatusOK, out)
 	case r.URL.Path == "/admin/keys" && r.Method == http.MethodPost:
@@ -118,6 +147,8 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.reconcile(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/keys/"), "/reconcile"), *body.Charged, body.OpusCharged)
+	case strings.HasPrefix(r.URL.Path, "/admin/keys/") && strings.HasSuffix(r.URL.Path, "/rotate") && r.Method == http.MethodPost:
+		h.rotateKey(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/keys/"), "/rotate"))
 	case strings.HasPrefix(r.URL.Path, "/admin/keys/") && r.Method == http.MethodDelete:
 		id := strings.TrimPrefix(r.URL.Path, "/admin/keys/")
 		err := h.store.update(func(keys []clientKey) ([]clientKey, error) {
@@ -151,12 +182,29 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
 	}
-	fixedAllocated, purchasedAllocated := totalRemaining(h.store.snapshot())
+	keys := h.store.snapshot()
+	fixedAllocated, purchasedAllocated := totalRemaining(keys)
+	var unlimitedFixed, unlimitedPurchased, unlimitedOpus int
+	for _, key := range keys {
+		if key.Revoked {
+			continue
+		}
+		if key.AllowFixed && key.FixedLimit == -1 {
+			unlimitedFixed++
+		}
+		if key.AllowPurchased && key.PurchasedLimit == -1 {
+			unlimitedPurchased++
+		}
+		if key.AllowOpus && opusEffectiveLimit(key) == -1 {
+			unlimitedOpus++
+		}
+	}
 	jsonReply(w, http.StatusOK, map[string]any{
 		"upstream_fixed_anlas": q.Official.Fixed, "upstream_purchased_anlas": q.Official.Purchased,
 		"upstream_anlas":        q.Official.Fixed + q.Official.Purchased,
 		"projected_fixed_anlas": q.Fixed, "projected_purchased_anlas": q.Purchased,
 		"allocated_fixed_anlas": fixedAllocated, "allocated_purchased_anlas": purchasedAllocated,
+		"unlimited_fixed_keys": unlimitedFixed, "unlimited_purchased_keys": unlimitedPurchased, "unlimited_opus_keys": unlimitedOpus,
 		"allocated_remaining_anlas":   fixedAllocated + purchasedAllocated,
 		"unallocated_fixed_anlas":     max(0, q.Fixed-fixedAllocated),
 		"unallocated_purchased_anlas": max(0, q.Purchased-purchasedAllocated),
@@ -194,18 +242,23 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		http.Error(w, "key generation failed", http.StatusInternalServerError)
 		return
 	}
-	raw, err := randomHex(32)
+	raw, err := randomClientKey()
 	if err != nil {
 		http.Error(w, "key generation failed", http.StatusInternalServerError)
 		return
 	}
 	key.Hash = hexHash(raw)
+	key.KeyCiphertext, err = h.vault.seal(raw)
+	if err != nil {
+		http.Error(w, "key generation failed", http.StatusInternalServerError)
+		return
+	}
 	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
 		if key.AllowMultiImage && !h.settings.snapshot().AllowMultiImage {
 			return nil, errors.New("enable multi-image in settings first")
 		}
 		fixed, purchased := totalRemaining(keys)
-		if fixed+fixedRemaining(key) > q.Fixed || purchased+purchasedRemaining(key) > q.Purchased {
+		if (key.FixedLimit != -1 && fixed+fixedRemaining(key) > q.Fixed) || (key.PurchasedLimit != -1 && purchased+purchasedRemaining(key) > q.Purchased) {
 			return nil, errors.New("not enough unallocated upstream Anlas")
 		}
 		return append(keys, key), nil
@@ -215,6 +268,46 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		return
 	}
 	jsonReply(w, http.StatusCreated, map[string]any{"key": raw, "client": viewKey(key)})
+}
+
+func (h *ManagedHandler) rotateKey(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	release, err := h.enter(r.Context())
+	if err != nil {
+		h.queueError(w, err)
+		return
+	}
+	defer release()
+	raw, err := randomClientKey()
+	if err != nil {
+		http.Error(w, "key generation failed", http.StatusInternalServerError)
+		return
+	}
+	ciphertext, err := h.vault.seal(raw)
+	if err != nil {
+		http.Error(w, "key generation failed", http.StatusInternalServerError)
+		return
+	}
+	var updated clientKey
+	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+		for i := range keys {
+			if keys[i].ID == id && !keys[i].Revoked {
+				keys[i].Hash = hexHash(raw)
+				keys[i].KeyCiphertext = ciphertext
+				updated = keys[i]
+				return keys, nil
+			}
+		}
+		return nil, errors.New("key not found")
+	})
+	if err != nil {
+		http.Error(w, "key not found", http.StatusNotFound)
+		return
+	}
+	jsonReply(w, http.StatusOK, map[string]any{"key": raw, "client": viewKey(updated)})
 }
 
 func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id string, input keyPolicyInput) {
