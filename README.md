@@ -12,7 +12,7 @@
 docker compose up -d --build
 ```
 
-Compose 仅把服务映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 key 哈希与额度账本。本机直接运行：
+Compose 默认仅把服务映射到主机 `127.0.0.1:8787`，以非 root 身份和只读根文件系统运行；`proxy-data` 卷保存 key 哈希与额度账本。需要局域网访问时，在 `.env` 中设置 `PROXY_BIND_ADDR` 为主机的局域网 IP，前端开发服务器使用 `--host 0.0.0.0` 启动。本机直接运行：
 
 ```bash
 PROXY_ADMIN_KEY='<管理员密钥>' PROXY_NAI_TOKEN='<NovelAI Token>' \

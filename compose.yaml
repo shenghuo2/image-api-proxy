@@ -18,7 +18,7 @@ services:
     volumes:
       - proxy-data:/data
     ports:
-      - 127.0.0.1:${PROXY_HOST_PORT:-8787}:8787
+      - ${PROXY_BIND_ADDR:-127.0.0.1}:${PROXY_HOST_PORT:-8787}:8787
     healthcheck:
       test: ["CMD", "/novelai-api-proxy", "-healthcheck"]
       interval: 30s
