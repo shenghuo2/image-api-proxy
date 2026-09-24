@@ -19,8 +19,6 @@
 | `https://image.novelai.net/ai/upscale` | `$BASE/ai/upscale` | V5 扩散超分 |
 | `https://image.novelai.net/ai/encode-vibe` | `$BASE/ai/encode-vibe` | Vibe 编码 |
 | `https://image.novelai.net/ai/augment-image` | `$BASE/ai/augment-image` | 导演增强，按尺寸与类型预留点数 |
-| `https://image.novelai.net/ai/annotate-image` | `$BASE/ai/annotate-image` | 图像标注 |
-| `https://image.novelai.net/ai/generate-image/suggest-tags` | `$BASE/ai/generate-image/suggest-tags` | 标签建议；保留 `prompt`、`model`、`type` 查询参数 |
 | `https://image.novelai.net/user/subscription` | `$BASE/user/subscription` | 返回这把客户端 key 可用的额度视图 |
 
 如果现有客户端已经把 `/image` 放在图片接口路径前，也可以保持该前缀：`$BASE/image/ai/generate-image` 等价于 `$BASE/ai/generate-image`。配置 SDK 时，确认它最终生成的 URL 与表中一行完全匹配；有些 SDK 把主站 API 与图片 API 写在不同的基址中，只应替换图片 API 的基址。
@@ -58,7 +56,7 @@ curl --fail-with-body -sS "$BASE/ai/encode-vibe" \
 
 流式接口只需把路径改为 `/ai/generate-image-stream`，并逐块消费响应；不要先把整个响应读完再交给原来的流解析器。ZIP、图片、Vibe 数据和流式帧不由代理重新编码。代理可能返回自己的纯文本错误，因此先检查 HTTP 状态码，再按官方格式解析成功响应。
 
-请求体格式没有另起一套协议，但代理会在转发前检查费用和参数。目前生成请求只接受已知的 NAI 3/4/4.5/5 模型、`n_samples` 为 1–4、宽高各 64–2048、步数 1–50；Vibe 参考图最多 16 张，Director 参考图最多 10 张。单次多图默认关闭，管理员须先在配置页开启全局开关，再为各 key 授权；多图全部按点数预留，不使用 Opus 免费配额。超出这些范围会返回 `400`，即使官方接口本身支持该请求。代理只允许标签建议路由带 `prompt`、`model`、`type` 查询参数；其他路由的查询参数和编码路径仍不转发。
+请求体格式没有另起一套协议，但代理会在转发前检查费用和参数。目前生成请求只接受已知的 NAI 3/4/4.5/5 模型、`n_samples` 为 1–4、宽高各 64–2048、步数 1–50；Vibe 参考图最多 16 张，Director 参考图最多 10 张。单次多图默认关闭，管理员须先在配置页开启全局开关，再为各 key 授权；多图全部按点数预留，不使用 Opus 免费配额。超出这些范围会返回 `400`，即使官方接口本身支持该请求。代理不转发查询参数或编码路径。
 
 ## 3. 代码中的最小改动
 
@@ -138,7 +136,7 @@ with open("request.json", "rb") as source:
 
 `*_limit` 是**累计上限**，不是每月自动重置的余额；`*_spent` 包括 `*_pending`。已确认计入用量可按 `spent - pending` 计算。订阅点数与付费购入点数的划分是代理的**本地预算**，NovelAI 实际先扣哪类点数由官方决定，不能据此把两类本地统计当作官方账单。
 
-导演增强按 28 步像素成本保守预留点数；即使官方 Opus 条件下可能免费，本地仍记入点数预算。标签建议和图像标注不预留点数。
+导演增强按 28 步像素成本保守预留点数；即使官方 Opus 条件下可能免费，本地仍记入点数预算。
 
 官方订阅默认缓存 5 分钟，缓存期内代理按已接收请求预计扣减。接入项目无需为每次生成前后反复查询 `/user/subscription`；如只需本地余额，读 `/quota` 即可。
 
@@ -170,7 +168,7 @@ curl --fail-with-body -sS "$BASE/user/subscription" \
 
 **客户端图片接口没有面向任意前端来源的 CORS 配置**。浏览器应用应由自己的后端或同源反向代理调用本服务，并把客户端 key 保存在服务端；不要将它放入公开的前端包、页面源码或浏览器持久存储。
 
-现有客户端若依赖官方 Cookie、`/user/login`、未列出的路由、标签建议之外的查询参数或任意自定义请求头，需要调整集成方式。代理不提供 `/user/login`，只转发少数必要请求头，并移除上游 `Set-Cookie`；受支持路径之外的官方功能应继续由原项目自行处理。
+现有客户端若依赖官方 Cookie、`/user/login`、未列出的路由、查询参数或任意自定义请求头，需要调整集成方式。代理不提供 `/user/login`、图像标注或标签建议，只转发少数必要请求头，并移除上游 `Set-Cookie`；受支持路径之外的官方功能应继续由原项目自行处理。
 
 ## 接入验收
 

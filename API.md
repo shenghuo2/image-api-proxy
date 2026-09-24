@@ -25,11 +25,9 @@ Authorization: Bearer <key>
 | POST | `/ai/upscale` | `image.novelai.net/ai/upscale` |
 | POST | `/ai/encode-vibe` | `image.novelai.net/ai/encode-vibe` |
 | POST | `/ai/augment-image` | `image.novelai.net/ai/augment-image` |
-| POST | `/ai/annotate-image` | `image.novelai.net/ai/annotate-image` |
-| GET | `/ai/generate-image/suggest-tags` | `image.novelai.net/ai/generate-image/suggest-tags` |
 | GET | `/user/subscription` | 查询订阅并返回客户端可用额度 |
 
-同样支持以 `$BASE/image` 为基址调用这些路径。`/ai/upscale` 对应仍可用的 V5 扩散超分；已停用的传统超分 `/api/ai/upscale` 不提供。`/user/login` 不开放，服务端 Token 不会返回给客户端。只有标签建议路由允许受限的查询参数；未列出的目标、其他查询参数和非预期方法不会转发。生成模型仅接受 NAI 3/4/4.5/5 已知型号。
+同样支持以 `$BASE/image` 为基址调用这些路径。`/ai/upscale` 对应仍可用的 V5 扩散超分；已停用的传统超分 `/api/ai/upscale` 不提供。`/user/login`、图像标注和标签建议不开放，服务端 Token 不会返回给客户端。查询参数、未列出的目标和非预期方法不会转发；生成模型仅接受 NAI 3/4/4.5/5 已知型号。
 
 例如，使用官方格式的生成请求体 `request.json` 调用一次性生成接口：
 
@@ -38,7 +36,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' 
   --data-binary @request.json "$BASE/ai/generate-image" --output image.zip
 ```
 
-生成、Vibe 编码、导演增强和扩散超分同时接受 JSON 或 `multipart/form-data` 请求体。multipart 中的 `request` part 必须是 JSON；图片等二进制 part 与原始 Content-Type 会原样转发给官方。代理只读取 `request` part 来估算费用。图像标注接收 JSON，标签建议接收 `prompt`、可选 `model` 和 `type=animev5` 查询参数。单次生成支持 `n_samples` 为 1–4；多图必须先在管理配置中全局开启、再逐 key 授权，默认均关闭。多图全部按点数预留，不使用 Opus 免费配额。
+生成、Vibe 编码、导演增强和扩散超分同时接受 JSON 或 `multipart/form-data` 请求体。multipart 中的 `request` part 必须是 JSON；图片等二进制 part 与原始 Content-Type 会原样转发给官方。代理只读取 `request` part 来估算费用。单次生成支持 `n_samples` 为 1–4；多图必须先在管理配置中全局开启、再逐 key 授权，默认均关闭。多图全部按点数预留，不使用 Opus 免费配额。
 
 响应图片、ZIP、Vibe 向量和流式帧不重新编码。上游状态码与响应体直接返回给客户端；代理自身的鉴权、队列、参数和配额错误由代理返回。
 
@@ -92,6 +90,6 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 
 生成前按像素、步数和附加项保守预留 Anlas；Vibe 编码预留 2 Anlas，超分预留 200 Anlas。Opus 免费尺寸请求按每张 1 次计入 key 上限；V5 的 Opus 配额低于 5% 且尚未耗尽时会拒绝这类请求，以免无法判断官方是否会改扣 Anlas。上游 2xx 会按预留值记账，明确的 4xx 会退回，5xx、连接中断和取消会保留为待核对额。代理**不再为每个任务查询前后官方余额**，因此本地扣费是保守估算，不会按单次官方实际扣费自动退款；周期刷新只校准共享账户的预计余额，无法准确把差额追溯到某把 key。管理员可结合官方账目调整上限，或用 `/reconcile` 处理待核对请求；人工核对后下一次读取官方额度会重新获取快照。
 
-导演增强按客户端采用的 28 步像素公式保守预留点数，背景移除按三倍基础费用加 5 计算；标注和标签建议不预留点数，也不触发官方订阅查询。导演工具即使在官方 Opus 条件下可能免费，代理仍按点数预算保守记账；需要精确核账时请参考官方账户记录。
+导演增强按客户端采用的 28 步像素公式保守预留点数，背景移除按三倍基础费用加 5 计算。导演工具即使在官方 Opus 条件下可能免费，代理仍按点数预算保守记账；需要精确核账时请参考官方账户记录。
 
 服务不记录 Token、key、提示词、图片或请求体；进程在转发时仍能看到这些内容。

@@ -29,20 +29,6 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 		return jobCost{Full: 2}, nil
 	case "/ai/upscale", "/image/ai/upscale":
 		return jobCost{Full: 200}, nil
-	case "/ai/annotate-image", "/image/ai/annotate-image":
-		var payload struct {
-			Image string `json:"image"`
-			Type  string `json:"req_type"`
-		}
-		if json.Unmarshal(request, &payload) != nil || payload.Image == "" {
-			return jobCost{}, errors.New("invalid annotation")
-		}
-		switch payload.Type {
-		case "wd-tagger", "canny", "depth", "openpose":
-			return jobCost{}, nil
-		default:
-			return jobCost{}, errors.New("unsupported annotation type")
-		}
 	case "/ai/augment-image", "/image/ai/augment-image":
 		var payload struct {
 			Image  string `json:"image"`

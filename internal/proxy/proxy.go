@@ -24,16 +24,12 @@ var routes = []route{
 	{"POST", "/ai/upscale"},
 	{"POST", "/ai/encode-vibe"},
 	{"POST", "/ai/augment-image"},
-	{"POST", "/ai/annotate-image"},
-	{"GET", "/ai/generate-image/suggest-tags"},
 	{"GET", "/user/subscription"},
 	{"POST", "/image/ai/generate-image-stream"},
 	{"POST", "/image/ai/generate-image"},
 	{"POST", "/image/ai/upscale"},
 	{"POST", "/image/ai/encode-vibe"},
 	{"POST", "/image/ai/augment-image"},
-	{"POST", "/image/ai/annotate-image"},
-	{"GET", "/image/ai/generate-image/suggest-tags"},
 	{"GET", "/image/user/subscription"},
 }
 

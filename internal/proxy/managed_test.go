@@ -302,7 +302,7 @@ func TestBatchCostNeverUsesOpus(t *testing.T) {
 	}
 }
 
-func TestAdditionalImageRoutes(t *testing.T) {
+func TestAugmentImageRoutes(t *testing.T) {
 	var forwarded atomic.Int64
 	multipartPayload, multipartContentType := managedMultipartBody(t,
 		multipartPart{name: "image", contentType: "image/png", data: []byte{0x89, 0x50, 0x4e, 0x47, 0xff}},
@@ -318,13 +318,6 @@ func TestAdditionalImageRoutes(t *testing.T) {
 		}
 		forwarded.Add(1)
 		switch r.URL.Path {
-		case "/ai/generate-image/suggest-tags":
-			if r.Method != "GET" || r.URL.Query().Get("prompt") != "blue hair" || r.URL.Query().Get("type") != "animev5" {
-				t.Errorf("tag query: %s", r.URL)
-			}
-			io.WriteString(w, `{"tags":[]}`)
-		case "/ai/annotate-image":
-			io.WriteString(w, `{"tags":[]}`)
 		case "/ai/augment-image":
 			if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
 				body, _ := io.ReadAll(r.Body)
@@ -346,9 +339,6 @@ func TestAdditionalImageRoutes(t *testing.T) {
 	defer server.Close()
 	created := doManaged(t, managedRequest(t, "POST", server.URL+"/admin/keys", testAdminKey, map[string]any{"name": "tools", "allow_fixed_anlas": true, "fixed_anlas_limit": 100}), 201)
 	key := created["key"].(string)
-	doManaged(t, managedRequest(t, "GET", server.URL+"/image/ai/generate-image/suggest-tags?prompt=blue+hair&type=animev5", key, nil), 200)
-	doManaged(t, managedRequest(t, "GET", server.URL+"/ai/generate-image/suggest-tags?prompt=a", key, nil), 400)
-	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/annotate-image", key, map[string]any{"image": "base64", "req_type": "wd-tagger"}), 200)
 	doManaged(t, managedRequest(t, "POST", server.URL+"/ai/augment-image", key, map[string]any{"image": "base64", "req_type": "colorize", "width": 512, "height": 512}), 200)
 	multipartRequest, err := http.NewRequest("POST", server.URL+"/image/ai/augment-image", bytes.NewReader(multipartPayload))
 	if err != nil {
@@ -357,8 +347,14 @@ func TestAdditionalImageRoutes(t *testing.T) {
 	multipartRequest.Header.Set("Authorization", "Bearer "+key)
 	multipartRequest.Header.Set("Content-Type", multipartContentType)
 	doManaged(t, multipartRequest, 200)
+	for _, path := range []string{"/ai/annotate-image", "/image/ai/annotate-image"} {
+		doManaged(t, managedRequest(t, "POST", server.URL+path, key, map[string]any{"image": "base64", "req_type": "wd-tagger"}), 404)
+	}
+	for _, path := range []string{"/ai/generate-image/suggest-tags", "/image/ai/generate-image/suggest-tags"} {
+		doManaged(t, managedRequest(t, "GET", server.URL+path, key, nil), 404)
+	}
 	quota := doManaged(t, managedRequest(t, "GET", server.URL+"/quota", key, nil), 200)
-	if quota["spent_anlas"] != float64(22) || forwarded.Load() != 4 {
+	if quota["spent_anlas"] != float64(22) || forwarded.Load() != 2 {
 		t.Fatalf("tools quota: %v, forwarded=%d", quota, forwarded.Load())
 	}
 }

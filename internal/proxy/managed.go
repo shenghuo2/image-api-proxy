@@ -160,7 +160,7 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/ai/generate-image/suggest-tags" && r.URL.Path != "/image/ai/generate-image/suggest-tags") {
+	if r.URL.EscapedPath() != r.URL.Path || r.URL.RawQuery != "" {
 		http.Error(w, "unsupported request target", http.StatusBadRequest)
 		return
 	}
@@ -228,62 +228,7 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if selected.path == "/ai/generate-image/suggest-tags" || selected.path == "/image/ai/generate-image/suggest-tags" {
-		h.serveTagSuggestions(w, r, key)
-		return
-	}
 	h.serveJob(w, r, key, selected)
-}
-
-func (h *ManagedHandler) serveTagSuggestions(w http.ResponseWriter, r *http.Request, key clientKey) {
-	if len(r.URL.RawQuery) > 2048 {
-		http.Error(w, "invalid query", http.StatusBadRequest)
-		return
-	}
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		http.Error(w, "invalid query", http.StatusBadRequest)
-		return
-	}
-	for name, values := range query {
-		if (name != "prompt" && name != "model" && name != "type") || len(values) != 1 {
-			http.Error(w, "invalid query", http.StatusBadRequest)
-			return
-		}
-	}
-	if prompt := query.Get("prompt"); len(prompt) < 2 || len(prompt) > 200 {
-		http.Error(w, "invalid prompt", http.StatusBadRequest)
-		return
-	}
-	if model := query.Get("model"); model != "" && !allowedGenerationModel(model) {
-		http.Error(w, "invalid model", http.StatusBadRequest)
-		return
-	}
-	if kind := query.Get("type"); kind != "" && kind != "animev5" {
-		http.Error(w, "invalid type", http.StatusBadRequest)
-		return
-	}
-	release, err := h.enter(r.Context())
-	if err != nil {
-		h.queueError(w, err)
-		return
-	}
-	defer release()
-	found := false
-	for _, current := range h.store.snapshot() {
-		if current.ID == key.ID && !current.Revoked {
-			found = true
-			break
-		}
-	}
-	if !found {
-		http.Error(w, "key unavailable", http.StatusUnauthorized)
-		return
-	}
-	upstreamRequest := r.Clone(r.Context())
-	upstreamRequest.Header = r.Header.Clone()
-	upstreamRequest.Header.Set("Authorization", "Bearer "+h.token)
-	h.image.ServeHTTP(w, upstreamRequest)
 }
 
 type upstreamQuota struct {
@@ -479,15 +424,6 @@ func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key cl
 	}
 	if !found || (cost.MultiImage && !current.AllowMultiImage) {
 		http.Error(w, "multi-image unavailable for key", http.StatusPaymentRequired)
-		return
-	}
-	if cost.Full == 0 {
-		upstreamRequest := r.Clone(r.Context())
-		upstreamRequest.Header = r.Header.Clone()
-		upstreamRequest.Header.Set("Authorization", "Bearer "+h.token)
-		upstreamRequest.Body = io.NopCloser(bytes.NewReader(body))
-		upstreamRequest.ContentLength = int64(len(body))
-		h.image.ServeHTTP(w, upstreamRequest)
 		return
 	}
 	q, err := h.currentQuota(r.Context(), false)
