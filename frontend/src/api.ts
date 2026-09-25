@@ -119,6 +119,16 @@ export interface ArchiveImage {
 
 export interface ArchiveList { items: ArchiveImage[]; total: number; page: number; page_size: number }
 export interface ArchiveStats { count: number; bytes: number; pending: number; failures: number; last_error: string }
+export interface ArchiveIPs { items: { ip: string; count: number }[]; truncated: boolean }
+export interface ArchiveOverview {
+  count: number
+  bytes: number
+  ip_count: number
+  key_count: number
+  group_count: number
+  hours: { date: string; hour: number; count: number }[]
+  keys: { key_id: string; key_name: string; count: number; bytes: number; ip_count: number; latest_at: string }[]
+}
 
 export interface QueueEntry {
   id?: string
@@ -182,6 +192,8 @@ export const api = {
   updateSettings: (key: string, settings: Partial<AdminSettings>) => request<AdminSettings>(key, '/admin/settings', 'PUT', settings),
   images: (key: string, params: URLSearchParams) => request<ArchiveList>(key, `/admin/images?${params}`),
   imageStats: (key: string) => request<ArchiveStats>(key, '/admin/images/stats'),
+  imageIPs: (key: string, search: string) => request<ArchiveIPs>(key, `/admin/images/ips?q=${encodeURIComponent(search)}`),
+  imageOverview: (key: string, params: URLSearchParams) => request<ArchiveOverview>(key, `/admin/images/overview?${params}`),
   deleteImage: (key: string, id: string) => request<void>(key, `/admin/images/${id}`, 'DELETE'),
   keys: (key: string) => request<ClientKey[]>(key, '/admin/keys'),
   quota: (key: string) => request<AdminQuota>(key, '/admin/quota'),

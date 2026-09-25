@@ -4,15 +4,55 @@ import { Button } from '@astryxdesign/core/Button'
 import type { ISODateString } from '@astryxdesign/core/Calendar'
 import { DateInput } from '@astryxdesign/core/DateInput'
 import { Dialog } from '@astryxdesign/core/Dialog'
+import { MultiSelector } from '@astryxdesign/core/MultiSelector'
 import { Pagination } from '@astryxdesign/core/Pagination'
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl'
 import { Selector } from '@astryxdesign/core/Selector'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Download, Eye, Filter, Image as ImageIcon, RefreshCw, Search, Trash2, X } from 'lucide-react'
-import { api, imageBlob, type ArchiveImage, type ArchiveList, type ArchiveStats, type ClientKey } from './api'
+import { api, imageBlob, type ArchiveImage, type ArchiveIPs, type ArchiveList, type ArchiveOverview, type ArchiveStats, type ClientKey } from './api'
 
-type ArchiveFilters = { keyID: string; ip: string; from?: ISODateString; to?: ISODateString }
+type ArchiveFilters = { keyID: string; ips: string[]; ipMode: 'include' | 'exclude'; from?: ISODateString; to?: ISODateString }
 
-const emptyFilters: ArchiveFilters = { keyID: 'all', ip: '' }
+const emptyFilters = (): ArchiveFilters => ({ keyID: 'all', ips: [], ipMode: 'include' })
+const number = new Intl.NumberFormat('zh-CN')
+
+function localDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function ArchiveAnalytics({ overview, keys }: { overview: ArchiveOverview | null; keys: ClientKey[] }) {
+  const today = new Date()
+  const days = Array.from({ length: 7 }, (_, index) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6 + index))
+  const counts = new Map(overview?.hours.map((item) => [`${item.date}-${item.hour}`, item.count]))
+  const maximum = Math.max(0, ...Array.from(counts.values()))
+  const names = new Map(keys.map((key) => [key.id, key.name]))
+
+  return <section className="page-section archive-analytics">
+    <div className="section-heading"><div><span className="eyebrow">ARCHIVE ACTIVITY</span><h2>归档统计</h2></div><span className="archive-analytics-caption">热力图：本地时间最近 7 天 · 表格：全部归档</span></div>
+    <div className="archive-analytics-layout">
+      <div className="archive-heatmap-panel">
+        <div className="archive-panel-heading"><strong>每小时生成</strong><span>峰值 {number.format(maximum)} 张 / 小时</span></div>
+        <div className="archive-heatmap-scroll"><div className="archive-heatmap" role="img" aria-label="最近七天每小时生成图片数量热力图">
+          <div className="archive-heatmap-hours"><span />{Array.from({ length: 24 }, (_, hour) => <span key={hour}>{hour % 6 === 0 ? `${hour}:00` : ''}</span>)}</div>
+          {days.map((day) => <div className="archive-heatmap-row" key={localDate(day)}><span className="archive-heatmap-day">{day.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</span>{Array.from({ length: 24 }, (_, hour) => {
+            const count = counts.get(`${localDate(day)}-${hour}`) ?? 0
+            const level = count === 0 ? 0 : Math.max(1, Math.ceil(count / maximum * 4))
+            return <span className={`archive-heatmap-cell level-${level}`} key={hour} title={`${localDate(day)} ${String(hour).padStart(2, '0')}:00 · ${number.format(count)} 张`} />
+          })}</div>)}
+        </div></div>
+        <div className="archive-heatmap-legend"><span>少</span>{[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}<span>多</span></div>
+      </div>
+      <div className="archive-summary-panel"><div className="archive-panel-heading"><strong>按密钥统计</strong><span>{number.format(overview?.key_count ?? 0)} 把密钥</span></div>
+        <div className="archive-summary-scroll"><table className="archive-summary-table"><thead><tr><th>密钥</th><th>图片</th><th>IP</th><th>空间</th></tr></thead><tbody>
+          {overview?.keys.map((item) => <tr key={item.key_id}><td title={names.get(item.key_id) ?? item.key_name}>{names.get(item.key_id) ?? item.key_name}</td><td>{number.format(item.count)}</td><td>{number.format(item.ip_count)}</td><td>{(item.bytes / 1048576).toFixed(1)} MiB</td></tr>)}
+          {overview?.keys.length === 0 && <tr><td colSpan={4} className="archive-summary-empty">暂无归档数据</td></tr>}
+          {!overview && <tr><td colSpan={4} className="archive-summary-empty">正在加载统计…</td></tr>}
+        </tbody></table></div>
+      </div>
+    </div>
+  </section>
+}
 
 function Thumbnail({ adminKey, id }: { adminKey: string; id: string }) {
   const container = useRef<HTMLSpanElement>(null)
@@ -79,13 +119,22 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
   const [page, setPage] = useState(1)
   const [list, setList] = useState<ArchiveList | null>(null)
   const [stats, setStats] = useState<ArchiveStats | null>(null)
+  const [overview, setOverview] = useState<ArchiveOverview | null>(null)
+  const [ipChoices, setIPChoices] = useState<ArchiveIPs | null>(null)
+  const [ipSearch, setIPSearch] = useState('')
+  const [ipQuery, setIPQuery] = useState('')
+  const [ipLoading, setIPLoading] = useState(false)
   const [preview, setPreview] = useState<ArchiveImage | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ArchiveImage | null>(null)
   const [error, setError] = useState('')
+  const [overviewError, setOverviewError] = useState('')
+  const [ipError, setIPError] = useState('')
   const [filterError, setFilterError] = useState('')
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const requestNumber = useRef(0)
+  const ipRequestNumber = useRef(0)
+  const overviewRequestNumber = useRef(0)
 
   const load = useCallback(async () => {
     const request = ++requestNumber.current
@@ -93,10 +142,10 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
     try {
       const params = new URLSearchParams({ page: String(page) })
       if (filters.keyID !== 'all') params.set('key_id', filters.keyID)
-      if (filters.ip) params.set('ip', filters.ip)
+      for (const ip of filters.ips) params.append(filters.ipMode === 'exclude' ? 'exclude_ip' : 'ip', ip)
       if (filters.from) params.set('from', new Date(`${filters.from}T00:00:00`).toISOString())
       if (filters.to) params.set('to', new Date(`${filters.to}T23:59:59`).toISOString())
-      const [images, summary] = await Promise.all([api.images(adminKey, params), api.imageStats(adminKey)])
+      const images = await api.images(adminKey, params)
       if (request !== requestNumber.current) return
       const lastPage = Math.max(1, Math.ceil(images.total / images.page_size))
       if (page > lastPage) {
@@ -104,7 +153,6 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
         return
       }
       setList(images)
-      setStats(summary)
       setError('')
     } catch (cause) {
       if (request === requestNumber.current) setError(cause instanceof Error ? cause.message : '图库加载失败')
@@ -115,11 +163,47 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
 
   useEffect(() => { void load() }, [load])
 
+  const loadOverview = useCallback(async () => {
+    const request = ++overviewRequestNumber.current
+    const today = new Date()
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const params = new URLSearchParams({ from: start.toISOString(), to: end.toISOString(), offset_minutes: String(today.getTimezoneOffset()) })
+    const [summary, analytics] = await Promise.allSettled([api.imageStats(adminKey), api.imageOverview(adminKey, params)])
+    if (request !== overviewRequestNumber.current) return
+    if (summary.status === 'fulfilled') setStats(summary.value)
+    if (analytics.status === 'fulfilled') setOverview(analytics.value)
+    const failure = summary.status === 'rejected' ? summary.reason : analytics.status === 'rejected' ? analytics.reason : null
+    if (failure) {
+      setOverviewError(failure instanceof Error ? failure.message : '归档统计加载失败')
+    } else {
+      setOverviewError('')
+    }
+  }, [adminKey])
+
+  const loadIPs = useCallback(async () => {
+    const request = ++ipRequestNumber.current
+    setIPLoading(true)
+    try {
+      const result = await api.imageIPs(adminKey, ipQuery)
+      if (request === ipRequestNumber.current) { setIPChoices(result); setIPError('') }
+    } catch (cause) {
+      if (request === ipRequestNumber.current) setIPError(cause instanceof Error ? cause.message : 'IP 列表加载失败')
+    } finally {
+      if (request === ipRequestNumber.current) setIPLoading(false)
+    }
+  }, [adminKey, ipQuery])
+
+  useEffect(() => { void loadOverview() }, [loadOverview])
+  useEffect(() => { void loadIPs() }, [loadIPs])
+
+  const refresh = () => { void load(); void loadOverview(); void loadIPs() }
+
   const applyFilters = (event?: FormEvent) => {
     event?.preventDefault()
-    const next = { ...draft, ip: draft.ip.trim() }
-    if (next.ip.length > 45) {
-      setFilterError('IP 地址过长')
+    const next = { ...draft }
+    if (next.ips.length > 100) {
+      setFilterError('一次最多筛选 100 个 IP')
       return
     }
     if (next.from && next.to && next.from > next.to) {
@@ -133,14 +217,14 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
   }
 
   const resetFilters = () => {
-    setDraft(emptyFilters)
-    setFilters(emptyFilters)
+    setDraft(emptyFilters())
+    setFilters(emptyFilters())
     setFilterError('')
     setPage(1)
   }
 
   const filterByIP = (ip: string) => {
-    const next = { ...emptyFilters, ip }
+    const next = { ...emptyFilters(), ips: [ip] }
     setDraft(next)
     setFilters(next)
     setFilterError('')
@@ -167,29 +251,38 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
       await api.deleteImage(adminKey, deleteTarget.id)
       setDeleteTarget(null)
       setError('')
-      await load()
+      await Promise.all([load(), loadOverview(), loadIPs()])
     } catch (cause) { setError(cause instanceof Error ? cause.message : '删除失败') }
     finally { setDeleting(false) }
   }
 
-  const hasFilters = filters.keyID !== 'all' || Boolean(filters.ip || filters.from || filters.to)
+  const hasFilters = filters.keyID !== 'all' || filters.ips.length > 0 || Boolean(filters.from || filters.to)
   const keyOptions = [{ value: 'all', label: '全部密钥' }, ...keys.map((key) => ({ value: key.id, label: key.name }))]
+  const availableIPs = new Map((ipChoices?.items ?? []).map((item) => [item.ip, item.count]))
+  const ipOptions = [...availableIPs].map(([ip, count]) => ({ value: ip, label: `${ip} · ${number.format(count)} 张` }))
+  for (const ip of draft.ips) if (!availableIPs.has(ip)) ipOptions.push({ value: ip, label: ip })
 
   return <>
-    <div className="page-intro"><div><span className="eyebrow">IMAGE ARCHIVE</span><h1>生成图库</h1></div><Button label="刷新图库" variant="secondary" size="sm" icon={<RefreshCw size={16} />} isLoading={loading} onClick={() => void load()} /></div>
+    <div className="page-intro"><div><span className="eyebrow">IMAGE ARCHIVE</span><h1>生成图库</h1></div><Button label="刷新图库" variant="secondary" size="sm" icon={<RefreshCw size={16} />} isLoading={loading} onClick={refresh} /></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
-    <div className="archive-stats"><span>图片 <strong>{stats?.count ?? '—'}</strong></span><span>已占用 <strong>{stats ? `${(stats.bytes / 1073741824).toFixed(2)} GiB` : '—'}</strong></span><span>待处理 <strong>{stats?.pending ?? '—'}</strong></span><span>归档失败 <strong>{stats?.failures ?? '—'}</strong></span></div>
+    {overviewError && <div className="inline-alert" role="alert">统计：{overviewError}</div>}
+    {ipError && <div className="inline-alert" role="alert">IP 列表：{ipError}</div>}
+    <div className="archive-stats"><span>图片 <strong>{stats ? number.format(stats.count) : '—'}</strong></span><span>已占用 <strong>{stats ? `${(stats.bytes / 1073741824).toFixed(2)} GiB` : '—'}</strong></span><span>生成批次 <strong>{overview ? number.format(overview.group_count) : '—'}</strong></span><span>来源 IP <strong>{overview ? number.format(overview.ip_count) : '—'}</strong></span><span>待处理 <strong>{stats?.pending ?? '—'}</strong></span><span>归档失败 <strong>{stats?.failures ?? '—'}</strong></span></div>
     {stats?.last_error && <div className="inline-alert" role="status">最近失败：{stats.last_error}</div>}
+    <ArchiveAnalytics overview={overview} keys={keys} />
     <section className="page-section archive-section">
+      <div className="section-heading archive-gallery-heading"><div><span className="eyebrow">BROWSE</span><h2>图片记录</h2></div><span>{list ? `${number.format(list.total)} 张符合条件` : '正在加载…'}</span></div>
       <form className="archive-filters" onSubmit={applyFilters}>
         <Selector label="密钥" options={keyOptions} value={draft.keyID} onChange={(keyID) => setDraft((value) => ({ ...value, keyID }))} hasSearch={keys.length > 8} width="100%" size="sm" />
-        <TextInput label="IP 地址" value={draft.ip} onChange={(ip) => setDraft((value) => ({ ...value, ip }))} placeholder="完整 IPv4 或 IPv6" hasClear width="100%" size="sm" />
+        <MultiSelector label="IP 地址" options={ipOptions} value={draft.ips} onChange={(ips) => setDraft((value) => ({ ...value, ips }))} placeholder="全部 IP" hasSearch searchPlaceholder="搜索 IP" hasClear triggerDisplay="count" formatValue={(items) => `${items.length} 个 IP`} emptyText="暂无归档 IP" width="100%" size="sm" isLoading={ipLoading} />
+        <div className="archive-ip-mode"><span>IP 条件</span><SegmentedControl label="IP 条件" value={draft.ipMode} onChange={(ipMode) => setDraft((value) => ({ ...value, ipMode: ipMode as ArchiveFilters['ipMode'] }))} size="sm"><SegmentedControlItem value="include" label="包含" /><SegmentedControlItem value="exclude" label="排除" /></SegmentedControl></div>
         <DateInput label="开始日期" value={draft.from} onChange={(from) => setDraft((value) => ({ ...value, from }))} max={draft.to} width="100%" size="sm" />
         <DateInput label="结束日期" value={draft.to} onChange={(to) => setDraft((value) => ({ ...value, to }))} min={draft.from} width="100%" size="sm" />
-        <div className="archive-filter-actions"><Button label="筛选" variant="primary" size="sm" icon={<Search size={16} />} type="submit" /><Button label="清除" variant="secondary" size="sm" onClick={resetFilters} isDisabled={!hasFilters && draft.keyID === 'all' && !draft.ip && !draft.from && !draft.to} /></div>
+        <div className="archive-filter-actions"><Button label="筛选" variant="primary" size="sm" icon={<Search size={16} />} type="submit" /><Button label="清除" variant="secondary" size="sm" onClick={resetFilters} isDisabled={!hasFilters && draft.keyID === 'all' && draft.ips.length === 0 && !draft.from && !draft.to} /></div>
       </form>
+      {(ipChoices?.truncated || ipQuery) && <form className="archive-ip-search" onSubmit={(event) => { event.preventDefault(); setIPQuery(ipSearch.trim()) }}><TextInput label="查找更多 IP" value={ipSearch} onChange={setIPSearch} placeholder="输入部分或完整 IP" hasClear width="100%" size="sm" /><Button label="查找" variant="secondary" size="sm" icon={<Search size={15} />} type="submit" />{ipChoices?.truncated && <span>结果较多，仅显示前 500 个 IP</span>}</form>}
       {filterError && <div className="inline-alert archive-filter-error" role="alert">{filterError}</div>}
-      {hasFilters && <div className="archive-filter-summary"><Filter size={14} aria-hidden="true" /><span>已筛选{filters.ip ? ` · IP ${filters.ip}` : ''}{filters.from || filters.to ? ' · 日期范围' : ''}{filters.keyID !== 'all' ? ' · 密钥' : ''}</span><button type="button" onClick={resetFilters}>清除筛选</button></div>}
+      {hasFilters && <div className="archive-filter-summary"><Filter size={14} aria-hidden="true" /><span>已筛选{filters.ips.length ? ` · ${filters.ipMode === 'exclude' ? '排除' : '包含'} IP ${filters.ips.slice(0, 3).join('、')}${filters.ips.length > 3 ? ` 等 ${filters.ips.length} 个` : ''}` : ''}{filters.from || filters.to ? ' · 日期范围' : ''}{filters.keyID !== 'all' ? ' · 密钥' : ''}</span><button type="button" onClick={resetFilters}>清除筛选</button></div>}
       <div className="archive-results" aria-busy={loading}>
         <div className="archive-grid">{list?.items.map((item) => <article className="archive-item" key={item.id}>
           <button type="button" className="archive-image" title="查看原图" aria-label={`查看 ${item.key_name} 的原图`} onClick={() => setPreview(item)}><Thumbnail adminKey={adminKey} id={item.id} /></button>
