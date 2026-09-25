@@ -15,7 +15,7 @@ import (
 
 type stateDB struct{ db *sql.DB }
 
-const stateSchemaVersion = 1
+const stateSchemaVersion = 2
 
 var stateTables = []string{
 	"CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -25,6 +25,7 @@ var stateTables = []string{
 	"CREATE TABLE jobs (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
 	"CREATE TABLE archive_work (id TEXT PRIMARY KEY, data BLOB NOT NULL, created_at INTEGER NOT NULL)",
 	"CREATE TABLE images (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL, bytes INTEGER NOT NULL, original TEXT NOT NULL, thumbnail TEXT NOT NULL)",
+	"CREATE TABLE usage_quarters (quarter_start INTEGER PRIMARY KEY, generations INTEGER NOT NULL, images INTEGER NOT NULL)",
 }
 
 var stateIndexes = []string{
@@ -42,7 +43,7 @@ var stateColumns = map[string][]string{
 	"images":       {"id", "group_id", "key_id", "key_name", "ip", "created_at", "bytes", "original", "thumbnail"},
 }
 
-func checkStateSchema(db *sql.DB) error {
+func checkStateSchema(db *sql.DB, version int) error {
 	for table, required := range stateColumns {
 		rows, err := db.Query("PRAGMA table_info(" + table + ")")
 		if err != nil {
@@ -67,6 +68,33 @@ func checkStateSchema(db *sql.DB) error {
 		for _, column := range required {
 			if !columns[column] {
 				return fmt.Errorf("incomplete SQLite schema: %s.%s is missing", table, column)
+			}
+		}
+	}
+	if version >= 2 {
+		rows, err := db.Query("PRAGMA table_info(usage_quarters)")
+		if err != nil {
+			return err
+		}
+		columns := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, primary int
+			var name, kind string
+			var fallback sql.NullString
+			if err := rows.Scan(&cid, &name, &kind, &notNull, &fallback, &primary); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, name := range []string{"quarter_start", "generations", "images"} {
+			if !columns[name] {
+				return fmt.Errorf("incomplete SQLite schema: usage_quarters.%s is missing", name)
 			}
 		}
 	}
@@ -151,9 +179,6 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 		if err := checkStateIntegrity(db); err != nil {
 			return fail(err)
 		}
-		if err := checkStateSchema(db); err != nil {
-			return fail(err)
-		}
 		var version int
 		if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 			return fail(err)
@@ -161,11 +186,14 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 		if version < 0 || version > stateSchemaVersion {
 			return fail(fmt.Errorf("unsupported SQLite schema version %d", version))
 		}
+		if err := checkStateSchema(db, version); err != nil {
+			return fail(err)
+		}
 		var marker string
 		if err := db.QueryRow("SELECT value FROM meta WHERE name='migrated'").Scan(&marker); err != nil || marker != "1" {
 			return fail(errors.New("incomplete SQLite migration; restore the legacy backup before retrying"))
 		}
-		if version == 0 {
+		if version < stateSchemaVersion {
 			tx, err := db.Begin()
 			if err != nil {
 				return fail(err)
@@ -174,25 +202,33 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 				_ = tx.Rollback()
 				return fail(fmt.Errorf("SQLite schema upgrade: %w", err))
 			}
-			var data []byte
-			if err := tx.QueryRow("SELECT data FROM settings WHERE id=1").Scan(&data); err != nil {
-				return rollback(err)
-			}
-			value, err := decodeProxySettings(data)
-			if err != nil {
-				return rollback(err)
-			}
-			data, err = json.Marshal(value)
-			if err != nil {
-				return rollback(err)
-			}
-			if _, err := tx.Exec("UPDATE settings SET data=? WHERE id=1", data); err != nil {
-				return rollback(err)
-			}
-			for _, statement := range stateIndexes {
-				if _, err := tx.Exec(statement); err != nil {
+			if version == 0 {
+				var data []byte
+				if err := tx.QueryRow("SELECT data FROM settings WHERE id=1").Scan(&data); err != nil {
 					return rollback(err)
 				}
+				value, err := decodeProxySettings(data)
+				if err != nil {
+					return rollback(err)
+				}
+				data, err = json.Marshal(value)
+				if err != nil {
+					return rollback(err)
+				}
+				if _, err := tx.Exec("UPDATE settings SET data=? WHERE id=1", data); err != nil {
+					return rollback(err)
+				}
+				for _, statement := range stateIndexes {
+					if _, err := tx.Exec(statement); err != nil {
+						return rollback(err)
+					}
+				}
+			}
+			if _, err := tx.Exec("CREATE TABLE IF NOT EXISTS usage_quarters (quarter_start INTEGER PRIMARY KEY, generations INTEGER NOT NULL, images INTEGER NOT NULL)"); err != nil {
+				return rollback(err)
+			}
+			if _, err := tx.Exec("INSERT INTO meta(name,value) SELECT 'archive_ever','1' WHERE EXISTS(SELECT 1 FROM images LIMIT 1) ON CONFLICT(name) DO NOTHING"); err != nil {
+				return rollback(err)
 			}
 			if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", stateSchemaVersion)); err != nil {
 				return rollback(err)
@@ -253,7 +289,7 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 	if err := checkStateIntegrity(db); err != nil {
 		return fail(err)
 	}
-	if err := checkStateSchema(db); err != nil {
+	if err := checkStateSchema(db, stateSchemaVersion); err != nil {
 		return fail(err)
 	}
 	s := &stateDB{db: db}
@@ -309,8 +345,8 @@ func validateLegacy(keys *keyStore, accounts *accountStore, settings *settingsSt
 			}
 		}
 	}
-	if settings.data.ArchiveDays < -1 || settings.data.ArchiveDays > 36500 || settings.data.ArchiveMaxBytes < 1<<20 || settings.data.ArchiveMaxBytes > 1<<40 {
-		return errors.New("invalid archive settings")
+	if settings.data.ArchiveDays < -1 || settings.data.ArchiveDays > 36500 || settings.data.ArchiveMaxBytes < 1<<20 || settings.data.ArchiveMaxBytes > 1<<40 || !validAdminUIPath(settings.data.AdminUIPath) {
+		return errors.New("invalid proxy settings")
 	}
 	return nil
 }

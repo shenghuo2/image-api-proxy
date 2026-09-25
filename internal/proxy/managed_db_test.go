@@ -90,7 +90,7 @@ func TestUnversionedSQLiteUpgradePreservesState(t *testing.T) {
 	if len(keys.keys) != 1 || keys.keys[0].FixedSpent != 17 || keys.keys[0].FixedPending != 3 || len(accounts.accounts) != 1 || len(jobs.jobs) != 1 {
 		t.Fatalf("state changed: keys=%+v accounts=%+v jobs=%+v", keys.keys, accounts.accounts, jobs.jobs)
 	}
-	if settings.data != (proxySettings{AllowMultiImage: true, ArchiveDays: 30, ArchiveMaxBytes: 20 << 30}) {
+	if settings.data != (proxySettings{AllowMultiImage: true, ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console"}) {
 		t.Fatalf("old settings defaults: %+v", settings.data)
 	}
 	var version, imageCount, indexCount int
@@ -173,7 +173,48 @@ func TestVersionedSQLiteLoadsMissingSettingsWithDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.db.Close()
-	if settings.data.ArchiveDays != 30 || settings.data.ArchiveMaxBytes != 20<<30 {
+	if settings.data.ArchiveDays != 30 || settings.data.ArchiveMaxBytes != 20<<30 || settings.data.AdminUIPath != "/console" {
 		t.Fatalf("versioned SQLite missing defaults: %+v", settings.data)
+	}
+}
+
+func TestVersionOneSQLiteUpgradePreservesArchiveAndAddsUsage(t *testing.T) {
+	path := unversionedStateFixture(t, `{"allow_multi_image":true}`)
+	db, err := sql.Open("sqlite", path+".sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE usage_quarters"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version=1"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	upgraded, keys, accounts, _, jobs, err := openFixtureState(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.db.Close()
+	if len(keys.keys) != 1 || len(accounts.accounts) != 1 || len(jobs.jobs) != 1 {
+		t.Fatal("upgrade changed existing state")
+	}
+	var version, images int
+	var ever string
+	if err := upgraded.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+		t.Fatalf("schema version=%d err=%v", version, err)
+	}
+	if err := upgraded.db.QueryRow("SELECT COUNT(*) FROM images").Scan(&images); err != nil || images != 1 {
+		t.Fatalf("archive images=%d err=%v", images, err)
+	}
+	if err := upgraded.db.QueryRow("SELECT value FROM meta WHERE name='archive_ever'").Scan(&ever); err != nil || ever != "1" {
+		t.Fatalf("archive marker=%q err=%v", ever, err)
+	}
+	if err := upgraded.recordGeneration(time.Date(2026, 9, 25, 1, 25, 0, 0, time.UTC), 2); err != nil {
+		t.Fatal(err)
+	}
+	var generated int
+	if err := upgraded.db.QueryRow("SELECT images FROM usage_quarters").Scan(&generated); err != nil || generated != 2 {
+		t.Fatalf("usage images=%d err=%v", generated, err)
 	}
 }

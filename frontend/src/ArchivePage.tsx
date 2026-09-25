@@ -17,40 +17,16 @@ type ArchiveFilters = { keyID: string; ips: string[]; ipMode: 'include' | 'exclu
 const emptyFilters = (): ArchiveFilters => ({ keyID: 'all', ips: [], ipMode: 'include' })
 const number = new Intl.NumberFormat('zh-CN')
 
-function localDate(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
-function ArchiveAnalytics({ overview, keys }: { overview: ArchiveOverview | null; keys: ClientKey[] }) {
-  const today = new Date()
-  const days = Array.from({ length: 7 }, (_, index) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6 + index))
-  const counts = new Map(overview?.hours.map((item) => [`${item.date}-${item.hour}`, item.count]))
-  const maximum = Math.max(0, ...Array.from(counts.values()))
+function ArchiveSummary({ overview, keys }: { overview: ArchiveOverview | null; keys: ClientKey[] }) {
   const names = new Map(keys.map((key) => [key.id, key.name]))
 
   return <section className="page-section archive-analytics">
-    <div className="section-heading"><div><span className="eyebrow">ARCHIVE ACTIVITY</span><h2>归档统计</h2></div><span className="archive-analytics-caption">热力图：本地时间最近 7 天 · 表格：全部归档</span></div>
-    <div className="archive-analytics-layout">
-      <div className="archive-heatmap-panel">
-        <div className="archive-panel-heading"><strong>每小时生成</strong><span>峰值 {number.format(maximum)} 张 / 小时</span></div>
-        <div className="archive-heatmap-scroll"><div className="archive-heatmap" role="img" aria-label="最近七天每小时生成图片数量热力图">
-          <div className="archive-heatmap-hours"><span />{Array.from({ length: 24 }, (_, hour) => <span key={hour}>{hour % 6 === 0 ? `${hour}:00` : ''}</span>)}</div>
-          {days.map((day) => <div className="archive-heatmap-row" key={localDate(day)}><span className="archive-heatmap-day">{day.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</span>{Array.from({ length: 24 }, (_, hour) => {
-            const count = counts.get(`${localDate(day)}-${hour}`) ?? 0
-            const level = count === 0 ? 0 : Math.max(1, Math.ceil(count / maximum * 4))
-            return <span className={`archive-heatmap-cell level-${level}`} key={hour} title={`${localDate(day)} ${String(hour).padStart(2, '0')}:00 · ${number.format(count)} 张`} />
-          })}</div>)}
-        </div></div>
-        <div className="archive-heatmap-legend"><span>少</span>{[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}<span>多</span></div>
-      </div>
-      <div className="archive-summary-panel"><div className="archive-panel-heading"><strong>按密钥统计</strong><span>{number.format(overview?.key_count ?? 0)} 把密钥</span></div>
-        <div className="archive-summary-scroll"><table className="archive-summary-table"><thead><tr><th>密钥</th><th>图片</th><th>IP</th><th>空间</th></tr></thead><tbody>
+    <div className="section-heading"><h2>归档来源</h2><span className="archive-analytics-caption">{overview ? `${number.format(overview.key_count)} 把密钥` : '正在加载…'}</span></div>
+    <div className="archive-summary-scroll"><table className="archive-summary-table"><thead><tr><th>密钥</th><th>图片</th><th>IP</th><th>空间</th></tr></thead><tbody>
           {overview?.keys.map((item) => <tr key={item.key_id}><td title={names.get(item.key_id) ?? item.key_name}>{names.get(item.key_id) ?? item.key_name}</td><td>{number.format(item.count)}</td><td>{number.format(item.ip_count)}</td><td>{(item.bytes / 1048576).toFixed(1)} MiB</td></tr>)}
           {overview?.keys.length === 0 && <tr><td colSpan={4} className="archive-summary-empty">暂无归档数据</td></tr>}
           {!overview && <tr><td colSpan={4} className="archive-summary-empty">正在加载统计…</td></tr>}
         </tbody></table></div>
-      </div>
-    </div>
   </section>
 }
 
@@ -113,7 +89,7 @@ function OriginalPreview({ adminKey, image, onClose, onDownload }: { adminKey: s
   </Dialog>
 }
 
-export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: ClientKey[] }) {
+export function ArchivePage({ adminKey, keys, onStatsChange }: { adminKey: string; keys: ClientKey[]; onStatsChange: (stats: ArchiveStats) => void }) {
   const [draft, setDraft] = useState<ArchiveFilters>(emptyFilters)
   const [filters, setFilters] = useState<ArchiveFilters>(emptyFilters)
   const [page, setPage] = useState(1)
@@ -171,7 +147,7 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
     const params = new URLSearchParams({ from: start.toISOString(), to: end.toISOString(), offset_minutes: String(today.getTimezoneOffset()) })
     const [summary, analytics] = await Promise.allSettled([api.imageStats(adminKey), api.imageOverview(adminKey, params)])
     if (request !== overviewRequestNumber.current) return
-    if (summary.status === 'fulfilled') setStats(summary.value)
+    if (summary.status === 'fulfilled') { setStats(summary.value); onStatsChange(summary.value) }
     if (analytics.status === 'fulfilled') setOverview(analytics.value)
     const failure = summary.status === 'rejected' ? summary.reason : analytics.status === 'rejected' ? analytics.reason : null
     if (failure) {
@@ -179,7 +155,7 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
     } else {
       setOverviewError('')
     }
-  }, [adminKey])
+  }, [adminKey, onStatsChange])
 
   const loadIPs = useCallback(async () => {
     const request = ++ipRequestNumber.current
@@ -263,15 +239,15 @@ export function ArchivePage({ adminKey, keys }: { adminKey: string; keys: Client
   for (const ip of draft.ips) if (!availableIPs.has(ip)) ipOptions.push({ value: ip, label: ip })
 
   return <>
-    <div className="page-intro"><div><span className="eyebrow">IMAGE ARCHIVE</span><h1>生成图库</h1></div><Button label="刷新图库" variant="secondary" size="sm" icon={<RefreshCw size={16} />} isLoading={loading} onClick={refresh} /></div>
+    <div className="page-intro"><div><h1>生成图库</h1></div><Button label="刷新图库" variant="secondary" size="sm" icon={<RefreshCw size={16} />} isLoading={loading} onClick={refresh} /></div>
     {error && <div className="inline-alert" role="alert">{error}</div>}
     {overviewError && <div className="inline-alert" role="alert">统计：{overviewError}</div>}
     {ipError && <div className="inline-alert" role="alert">IP 列表：{ipError}</div>}
     <div className="archive-stats"><span>图片 <strong>{stats ? number.format(stats.count) : '—'}</strong></span><span>已占用 <strong>{stats ? `${(stats.bytes / 1073741824).toFixed(2)} GiB` : '—'}</strong></span><span>生成批次 <strong>{overview ? number.format(overview.group_count) : '—'}</strong></span><span>来源 IP <strong>{overview ? number.format(overview.ip_count) : '—'}</strong></span><span>待处理 <strong>{stats?.pending ?? '—'}</strong></span><span>归档失败 <strong>{stats?.failures ?? '—'}</strong></span></div>
     {stats?.last_error && <div className="inline-alert" role="status">最近失败：{stats.last_error}</div>}
-    <ArchiveAnalytics overview={overview} keys={keys} />
+    <ArchiveSummary overview={overview} keys={keys} />
     <section className="page-section archive-section">
-      <div className="section-heading archive-gallery-heading"><div><span className="eyebrow">BROWSE</span><h2>图片记录</h2></div><span>{list ? `${number.format(list.total)} 张符合条件` : '正在加载…'}</span></div>
+      <div className="section-heading archive-gallery-heading"><div><h2>图片记录</h2></div><span>{list ? `${number.format(list.total)} 张符合条件` : '正在加载…'}</span></div>
       <form className="archive-filters" onSubmit={applyFilters}>
         <Selector label="密钥" options={keyOptions} value={draft.keyID} onChange={(keyID) => setDraft((value) => ({ ...value, keyID }))} hasSearch={keys.length > 8} width="100%" size="sm" />
         <MultiSelector label="IP 地址" options={ipOptions} value={draft.ips} onChange={(ips) => setDraft((value) => ({ ...value, ips }))} placeholder="全部 IP" hasSearch searchPlaceholder="搜索 IP" hasClear triggerDisplay="count" formatValue={(items) => `${items.length} 个 IP`} emptyText="暂无归档 IP" width="100%" size="sm" isLoading={ipLoading} />

@@ -4,7 +4,8 @@ import "net/http"
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status    int
+	bodyBytes int64
 }
 
 func (w *statusWriter) WriteHeader(status int) {
@@ -18,7 +19,9 @@ func (w *statusWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(data)
+	n, err := w.ResponseWriter.Write(data)
+	w.bodyBytes += int64(n)
+	return n, err
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter {

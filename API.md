@@ -10,6 +10,8 @@ Authorization: Bearer <key>
 
 `/admin/*` 使用 `PROXY_ADMIN_KEY`；其他需要认证的接口使用管理员签发的客户端 key。代理会在转发官方接口时，将客户端 key 替换为选定账号的 NovelAI Token。客户端不需要也不应持有上游 Token。
 
+内置管理页面默认位于 `/console/`，可用 `PUT /admin/settings` 的 `admin_ui_path` 字段修改。路径须以 `/` 开头，无结尾斜杠，长度不超过 128，只能包含英文字母、数字、`-`、`_` 和作为分隔符的 `/`；首段不能占用 `admin`、`ai`、`image`、`user`、`quota`、`healthz` 或 `jobs`。修改立即生效，旧页面地址不再提供静态文件；`/admin/*` 的 API 地址和认证方式不变。
+
 独立管理前端跨域访问时，可设置 `PROXY_ADMIN_ORIGIN` 为前端的完整来源（例如 `https://admin.example.com`，不带路径或尾部斜杠）。只有该来源的 `/admin/*` 浏览器请求会获得 CORS 响应头；不使用 Cookie 凭证。
 
 `GET /healthz` 无需认证，只检查服务进程状态。
@@ -81,8 +83,9 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `POST /admin/accounts/{id}/quota/refresh` | 请求刷新单账号额度；受最短 30 秒刷新间隔限制 |
 | `GET /admin/keys` | 列出每把 key 的权限、额度与状态；可解密的新 key 含 `key` 字段 |
 | `GET /admin/queue` | 读取当前执行请求、等待池顺序、持久化任务 ID、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
-| `GET /admin/settings` | 查看全局多图及归档设置 |
-| `PUT /admin/settings` | 部分更新设置，例如 `{"archive_enabled":true,"archive_retention_days":-1,"archive_max_bytes":21474836480}` |
+| `GET /admin/usage/hours` | 最近至多 8 天的成功生成时间桶，供“用量统计”热力图使用 |
+| `GET /admin/settings` | 查看全局多图、归档及管理页面路径设置 |
+| `PUT /admin/settings` | 部分更新设置，例如 `{"archive_enabled":true,"archive_retention_days":-1,"archive_max_bytes":21474836480}` 或 `{"admin_ui_path":"/private/console"}` |
 | `GET /admin/images` | 按 `key_id`、重复的 `ip` 或 `exclude_ip`、`from`、`to`、`page` 筛选归档；固定每页 24 张 |
 | `GET /admin/images/stats` | 返回图片数、占用字节、待处理数、失败次数和最近错误 |
 | `GET /admin/images/ips` | 返回 IP 与对应图片数；可用 `q` 搜索，单次最多返回 500 个 |
@@ -164,9 +167,11 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
 
 列表还可用 `to` 筛选结束时间，`from` 和 `to` 都使用 RFC 3339 时间。重复传 `ip` 表示包含这些精确 IP，重复传 `exclude_ip` 表示排除这些 IP；两者不能同时使用，单次最多指定 100 个。原有的单个 `ip` 用法保持兼容。列表按完成时间倒序，固定每页 24 张，返回 `items`、`total`、`page` 和 `page_size`；每项的 `group_size` 表示同组图片总数。
 
-`/admin/images/ips` 返回按图片数降序排列的 `items`（每项有 `ip`、`count`）和 `truncated`。不带 `q` 时，IP 总数不超过 500 会全部列出；超过时先返回前 500 个，再用 `q` 子串搜索其余地址。`/admin/images/overview` 要求 `from`、`to` 为 RFC 3339，窗口不超过 8 天，`offset_minutes` 为浏览器当前的 UTC 减本地时间分钟数（例如 UTC+8 为 `-480`）；`to` 不包含在窗口内。它返回全部归档的 `count`、`bytes`、`ip_count`、`key_count`、`group_count` 和按 key 汇总的 `keys`，以及窗口内的 `hours`（本地日期、0–23 点、图片数）。管理页用最近 7 个本地日绘制逐小时热力图；统计查询只访问本地 SQLite，不请求官方额度。
+`/admin/images/ips` 返回按图片数降序排列的 `items`（每项有 `ip`、`count`）和 `truncated`。不带 `q` 时，IP 总数不超过 500 会全部列出；超过时先返回前 500 个，再用 `q` 子串搜索其余地址。`/admin/images/overview` 要求 `from`、`to` 为 RFC 3339，窗口不超过 8 天，`offset_minutes` 为浏览器当前的 UTC 减本地时间分钟数（例如 UTC+8 为 `-480`）；`to` 不包含在窗口内。它返回全部归档的 `count`、`bytes`、`ip_count`、`key_count`、`group_count` 和按 key 汇总的 `keys`，以及窗口内的 `hours`（本地日期、0–23 点、归档图片数）。统计查询只访问本地 SQLite，不请求官方额度。
 
-`/admin/images/stats` 返回 `count`、`bytes`、`pending`、`failures` 和 `last_error`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
+`/admin/images/stats` 返回 `count`、`bytes`、`pending`、`failures`、`last_error` 和 `ever_archived`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。`ever_archived` 成功归档后永久为 `true`，删除或清理全部图片也不重置。升级时仅能从仍存在的旧图片回填。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
+
+`GET /admin/usage/hours` 接受与 `/admin/images/overview` 相同的 `from`、`to`、`offset_minutes` 参数，返回 `hours` 数组；每项有本地 `date`、`hour`、`count`（成功响应的生成图片张数）和 `generations`（请求次数）。从 `v0.1.3` 起，生成响应为非空 `2xx`、连接未断开且额度结算成功时写入本地 SQLite，普通、流式、`/image` 别名和持久化任务均参与；不依赖归档开关。旧请求缺少完成时间，无法回填。时间数据按 15 分钟聚合，只用于管理统计，不调用官方额度接口。
 
 ## 排队与结算
 

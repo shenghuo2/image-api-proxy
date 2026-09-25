@@ -5,18 +5,42 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 type proxySettings struct {
-	AllowMultiImage bool  `json:"allow_multi_image"`
-	ArchiveEnabled  bool  `json:"archive_enabled"`
-	ArchiveDays     int   `json:"archive_retention_days"`
-	ArchiveMaxBytes int64 `json:"archive_max_bytes"`
+	AllowMultiImage bool   `json:"allow_multi_image"`
+	ArchiveEnabled  bool   `json:"archive_enabled"`
+	ArchiveDays     int    `json:"archive_retention_days"`
+	ArchiveMaxBytes int64  `json:"archive_max_bytes"`
+	AdminUIPath     string `json:"admin_ui_path"`
 }
 
 func defaultProxySettings() proxySettings {
-	return proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30}
+	return proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console"}
+}
+
+func validAdminUIPath(path string) bool {
+	if len(path) < 2 || len(path) > 128 || path[0] != '/' || strings.HasSuffix(path, "/") {
+		return false
+	}
+	for _, segment := range strings.Split(path[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		for _, c := range segment {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return false
+			}
+		}
+	}
+	first := strings.SplitN(path[1:], "/", 2)[0]
+	switch first {
+	case "admin", "ai", "image", "user", "quota", "healthz", "jobs":
+		return false
+	}
+	return true
 }
 
 func decodeProxySettings(data []byte) (proxySettings, error) {
@@ -24,8 +48,8 @@ func decodeProxySettings(data []byte) (proxySettings, error) {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return proxySettings{}, err
 	}
-	if value.ArchiveDays < -1 || value.ArchiveDays > 36500 || value.ArchiveMaxBytes < 1<<20 || value.ArchiveMaxBytes > 1<<40 {
-		return proxySettings{}, errors.New("invalid archive settings")
+	if value.ArchiveDays < -1 || value.ArchiveDays > 36500 || value.ArchiveMaxBytes < 1<<20 || value.ArchiveMaxBytes > 1<<40 || !validAdminUIPath(value.AdminUIPath) {
+		return proxySettings{}, errors.New("invalid proxy settings")
 	}
 	return value, nil
 }

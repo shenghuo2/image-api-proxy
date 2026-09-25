@@ -17,6 +17,7 @@ type jobCost struct {
 	OpusEligible bool
 	V5           bool
 	MultiImage   bool
+	Samples      int
 }
 
 func estimateJob(path string, body []byte, contentType string) (jobCost, error) {
@@ -94,6 +95,7 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 		OpusEligible: p.Samples == 1 && p.Steps <= 28 && p.Width*p.Height <= 1048576,
 		V5:           v5,
 		MultiImage:   p.Samples > 1,
+		Samples:      p.Samples,
 	}, nil
 }
 

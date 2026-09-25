@@ -54,14 +54,15 @@ func (h *ManagedHandler) serveAdminImages(w http.ResponseWriter, r *http.Request
 	}
 	if r.URL.Path == "/admin/images/stats" && r.Method == http.MethodGet {
 		var count, bytes, failures, pending int64
-		var last string
+		var last, ever string
 		if err := h.db.db.QueryRow("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM images").Scan(&count, &bytes); err != nil {
 			http.Error(w, "archive unavailable", 500)
 			return
 		}
 		_ = h.db.db.QueryRow("SELECT COUNT(*) FROM archive_work").Scan(&pending)
 		_ = h.db.db.QueryRow("SELECT COALESCE((SELECT value FROM meta WHERE name='archive_failures'),'0'),COALESCE((SELECT value FROM meta WHERE name='archive_last_error'),'')").Scan(&failures, &last)
-		jsonReply(w, 200, map[string]any{"count": count, "bytes": bytes, "failures": failures, "last_error": last, "pending": pending})
+		_ = h.db.db.QueryRow("SELECT COALESCE((SELECT value FROM meta WHERE name='archive_ever'),'0')").Scan(&ever)
+		jsonReply(w, 200, map[string]any{"count": count, "bytes": bytes, "failures": failures, "last_error": last, "pending": pending, "ever_archived": ever == "1" || count > 0})
 		return
 	}
 	if r.URL.Path == "/admin/images" && r.Method == http.MethodGet {

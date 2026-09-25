@@ -61,6 +61,10 @@ type ManagedHandler struct {
 	poolCursor       int
 }
 
+func (h *ManagedHandler) AdminUIPath() string {
+	return h.settings.snapshot().AdminUIPath
+}
+
 func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if len(cfg.AdminKey) < 32 || (cfg.NovelAIToken != "" && len(cfg.NovelAIToken) < 16) {
 		return nil, errors.New("admin key must be at least 32 characters and configured NovelAI token at least 16")
@@ -189,7 +193,7 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images" && r.URL.Path != "/admin/images/ips" && r.URL.Path != "/admin/images/overview") {
+	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images" && r.URL.Path != "/admin/images/ips" && r.URL.Path != "/admin/images/overview" && r.URL.Path != "/admin/usage/hours") {
 		http.Error(w, "unsupported request target", http.StatusBadRequest)
 		return
 	}
@@ -675,6 +679,11 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		q.Purchased += hold.Purchased
 		if cost.V5 {
 			q.OpusJobsSinceRefresh -= hold.Opus
+		}
+	}
+	if err == nil && !refund && cost.Samples > 0 && tracked.bodyBytes > 0 {
+		if saveErr := h.db.recordGeneration(time.Now(), cost.Samples); saveErr != nil {
+			slog.Warn("generation activity unavailable", "error", saveErr)
 		}
 	}
 }

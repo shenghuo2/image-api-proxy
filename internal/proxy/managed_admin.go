@@ -108,6 +108,8 @@ func decodeAdminBody(r *http.Request, dst any) error {
 
 func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/admin/usage/hours" && r.Method == http.MethodGet:
+		h.serveUsageHours(w, r)
 	case r.URL.Path == "/admin/images" || r.URL.Path == "/admin/images/stats" || strings.HasPrefix(r.URL.Path, "/admin/images/"):
 		h.serveAdminImages(w, r)
 	case r.URL.Path == "/admin/accounts" || strings.HasPrefix(r.URL.Path, "/admin/accounts/"):
@@ -116,12 +118,13 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodPut:
 		var input struct {
-			AllowMultiImage *bool  `json:"allow_multi_image"`
-			ArchiveEnabled  *bool  `json:"archive_enabled"`
-			ArchiveDays     *int   `json:"archive_retention_days"`
-			ArchiveMaxBytes *int64 `json:"archive_max_bytes"`
+			AllowMultiImage *bool   `json:"allow_multi_image"`
+			ArchiveEnabled  *bool   `json:"archive_enabled"`
+			ArchiveDays     *int    `json:"archive_retention_days"`
+			ArchiveMaxBytes *int64  `json:"archive_max_bytes"`
+			AdminUIPath     *string `json:"admin_ui_path"`
 		}
-		if err := decodeAdminBody(r, &input); err != nil || (input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil) {
+		if err := decodeAdminBody(r, &input); err != nil || (input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil) {
 			http.Error(w, "invalid settings", http.StatusBadRequest)
 			return
 		}
@@ -138,8 +141,15 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		if input.ArchiveMaxBytes != nil {
 			next.ArchiveMaxBytes = *input.ArchiveMaxBytes
 		}
+		if input.AdminUIPath != nil {
+			next.AdminUIPath = *input.AdminUIPath
+		}
 		if next.ArchiveDays < -1 || next.ArchiveDays > 36500 || next.ArchiveMaxBytes < 1<<20 || next.ArchiveMaxBytes > 1<<40 {
 			http.Error(w, "invalid archive retention", http.StatusBadRequest)
+			return
+		}
+		if !validAdminUIPath(next.AdminUIPath) {
+			http.Error(w, "invalid admin UI path", http.StatusBadRequest)
 			return
 		}
 		if err := h.settings.set(next); err != nil {

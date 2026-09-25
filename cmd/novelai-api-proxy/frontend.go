@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func mountFrontend(api http.Handler, dir string) (http.Handler, error) {
+func mountFrontend(api http.Handler, dir string, adminPath func() string) (http.Handler, error) {
 	files := os.DirFS(dir)
 	index, err := fs.Stat(files, "index.html")
 	if err != nil {
@@ -24,8 +24,16 @@ func mountFrontend(api http.Handler, dir string) (http.Handler, error) {
 			api.ServeHTTP(w, r)
 			return
 		}
-
-		name := strings.TrimPrefix(r.URL.Path, "/")
+		path := adminPath()
+		if r.URL.Path == path {
+			http.Redirect(w, r, path+"/", http.StatusPermanentRedirect)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, path+"/") {
+			http.NotFound(w, r)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, path+"/")
 		if name == "" {
 			name = "index.html"
 		}
@@ -33,20 +41,16 @@ func mountFrontend(api http.Handler, dir string) (http.Handler, error) {
 			if info, err := fs.Stat(files, name); err == nil && info.Mode().IsRegular() {
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("X-Content-Type-Options", "nosniff")
-				static.ServeHTTP(w, r)
+				http.StripPrefix(path, static).ServeHTTP(w, r)
 				return
 			}
 		}
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			http.NotFound(w, r)
-			return
-		}
-		api.ServeHTTP(w, r)
+		http.NotFound(w, r)
 	}), nil
 }
 
 func isAPIRoute(path string) bool {
-	for _, prefix := range []string{"/admin", "/ai", "/image", "/user", "/quota", "/healthz"} {
+	for _, prefix := range []string{"/admin", "/ai", "/image", "/user", "/quota", "/healthz", "/jobs"} {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
 		}

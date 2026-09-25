@@ -207,6 +207,26 @@ func TestArchivePNGZIPStreamAndAdminAccess(t *testing.T) {
 		t.Fatalf("delete status %d", deleted.Code)
 	}
 	waitArchiveCount(t, h, 3)
+	for _, item := range result.Items {
+		if item.ID == id {
+			continue
+		}
+		req := httptest.NewRequest(http.MethodDelete, "/admin/images/"+item.ID, nil)
+		req.Header.Set("Authorization", "Bearer "+testAdminKey)
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, req)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("delete remaining image: %d", response.Code)
+		}
+	}
+	stats := archiveAdminGet(t, h, "/admin/images/stats")
+	var summary struct {
+		Count        int  `json:"count"`
+		EverArchived bool `json:"ever_archived"`
+	}
+	if stats.Code != http.StatusOK || json.Unmarshal(stats.Body.Bytes(), &summary) != nil || summary.Count != 0 || !summary.EverArchived {
+		t.Fatalf("archive history lost after deleting images: %d %s", stats.Code, stats.Body.String())
+	}
 }
 
 func TestArchiveStreamingFlushesBeforeCompletion(t *testing.T) {

@@ -66,6 +66,13 @@ button:disabled { cursor: not-allowed; }
 .settings-section .policy-row { background: #fff; border: 1px solid #e1e7ee; border-radius: 8px; padding: 18px 20px; }
 .settings-section .policy-row-top > div { min-width: 0; }
 .settings-section .policy-row-top small { line-height: 1.5; }
+.admin-path-settings { display: grid; gap: 8px; }
+.admin-path-settings label { color: #4c5b68; font-size: 12px; font-weight: 600; }
+.admin-path-controls { display: flex; flex-wrap: wrap; gap: 10px; }
+.admin-path-controls input { flex: 1 1 230px; min-width: 0; height: 37px; padding: 0 10px; border: 1px solid #d7dfe5; border-radius: 5px; background: #fff; color: #263540; font: inherit; }
+.admin-path-controls button { min-height: 37px; padding: 0 12px; border: 1px solid #d8e0e5; border-radius: 5px; background: #fff; color: #2b4653; }
+.admin-path-controls button:disabled { opacity: .5; cursor: default; }
+.admin-path-settings small { color: #687586; font-size: 11px; }
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .section-heading h2 { margin: 0; color: #19212b; font-size: 17px; font-weight: 700; }
 .section-heading .eyebrow { margin-bottom: 6px; }
@@ -263,15 +270,15 @@ button:disabled { cursor: not-allowed; }
 .archive-stats { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0 0 22px; padding: 15px 0; border-top: 1px solid #e4e9ed; border-bottom: 1px solid #e4e9ed; color: #64727e; font-size: 13px; }
 .archive-stats span { display: flex; align-items: baseline; gap: 8px; }
 .archive-stats strong { color: #1e2932; font-size: 16px; }
-.archive-analytics { margin-bottom: 30px; }
+.archive-analytics { max-width: 760px; }
 .archive-analytics-caption, .archive-gallery-heading > span { color: #82909c; font-size: 12px; }
-.archive-analytics-layout { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(320px,.75fr); gap: 30px; }
-.archive-heatmap-panel, .archive-summary-panel { min-width: 0; }
+.usage-activity { margin-bottom: 34px; }
+.usage-activity-caption { display: block; margin-top: 5px; color: #82909c; font-size: 11px; }
 .archive-panel-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 13px; }
 .archive-panel-heading strong { color: #293742; font-size: 13px; }
 .archive-panel-heading span { color: #8a98a2; font-size: 11px; }
 .archive-heatmap-scroll { max-width: 100%; overflow-x: auto; padding-bottom: 5px; }
-.archive-heatmap { min-width: 550px; }
+.archive-heatmap { width: min(100%, 1000px); min-width: 550px; }
 .archive-heatmap-hours, .archive-heatmap-row { display: grid; grid-template-columns: 54px repeat(24,minmax(16px,1fr)); gap: 3px; align-items: center; }
 .archive-heatmap-hours { margin-bottom: 5px; color: #8997a1; font-size: 9px; }
 .archive-heatmap-hours span:not(:first-child) { white-space: nowrap; }
@@ -342,7 +349,7 @@ button:disabled { cursor: not-allowed; }
 .archive-preview-stage p { padding: 50px 18px; color: #64727e; font-size: 13px; text-align: center; }
 .archive-preview footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-top: 1px solid #e7ecef; color: #72818d; font-size: 11px; }
 @media (max-width: 1200px) { .archive-filters { grid-template-columns: repeat(3,minmax(0,1fr)); } .archive-filter-actions { grid-column: 1 / -1; } }
-@media (max-width: 900px) { .archive-analytics-layout { grid-template-columns: minmax(0,1fr); gap: 24px; } .archive-summary-scroll { max-height: 220px; } }
+@media (max-width: 900px) { .archive-summary-scroll { max-height: 220px; } }
 @media (max-width: 700px) { .archive-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .archive-pager { flex-direction: column; align-items: flex-start; } }
 @media (max-width: 700px) { .archive-filters { grid-template-columns: repeat(2,minmax(0,1fr)); } .archive-ip-search { flex-wrap: wrap; } .archive-ip-search > span { flex-basis: 100%; padding: 0; } }
 @media (max-width: 560px) { .archive-filters, .archive-grid { grid-template-columns: 1fr; } .archive-filter-actions { grid-column: auto; } .archive-settings { grid-template-columns: repeat(2,minmax(0,1fr)); } .archive-settings button { grid-column: 1 / -1; } .archive-analytics-caption { max-width: 145px; text-align: right; } }

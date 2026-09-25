@@ -5,9 +5,10 @@ import {
   KeyRound, LayoutDashboard, LockKeyhole, LogOut, Pencil, Plus,
   RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw, Users, ListOrdered, Images,
 } from 'lucide-react'
-import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQuota, type AdminSettings, type ClientKey, type KeyPolicy } from './api'
+import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQuota, type AdminSettings, type ArchiveStats, type ClientKey, type KeyPolicy } from './api'
 import { QueuePage } from './QueuePage'
 import { ArchivePage } from './ArchivePage'
+import { UsageHeatmap } from './UsageHeatmap'
 
 type View = 'overview' | 'queue' | 'accounts' | 'keys' | 'usage' | 'archive' | 'settings'
 type DialogState =
@@ -40,7 +41,7 @@ function IconAction({ label, icon, onClick, danger = false, disabled = false }: 
 }
 
 function Brand() {
-  return <div className="brand"><span className="brand-mark"><img src="/favicon.svg" alt="" /></span><span className="brand-text">NovelAI <strong>Proxy</strong><small>ADMIN CONSOLE</small></span></div>
+  return <div className="brand"><span className="brand-mark"><img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" /></span><span className="brand-text">NovelAI <strong>Proxy</strong><small>ADMIN CONSOLE</small></span></div>
 }
 
 function Modal({ title, children, onClose, width = 'normal' }: { title: string; children: ReactNode; onClose: () => void; width?: 'normal' | 'wide' }) {
@@ -80,7 +81,7 @@ function Login({ onConnect, busy, error }: { onConnect: (key: string) => Promise
   </div>
 }
 
-function Sidebar({ view, setView, quota, onLogout }: { view: View; setView: (view: View) => void; quota: AdminQuota | null; onLogout: () => void }) {
+function Sidebar({ view, setView, quota, showArchive, onLogout }: { view: View; setView: (view: View) => void; quota: AdminQuota | null; showArchive: boolean; onLogout: () => void }) {
   const items: { id: View; label: string; icon: ReactNode }[] = [
     { id: 'overview', label: '概览', icon: <LayoutDashboard size={18} /> },
     { id: 'queue', label: '任务队列', icon: <ListOrdered size={18} /> },
@@ -94,7 +95,7 @@ function Sidebar({ view, setView, quota, onLogout }: { view: View; setView: (vie
     <Brand />
     <div className="side-label">工作区</div>
     <nav aria-label="主导航" className="side-nav">
-      {items.map((item) => <button type="button" key={item.id} className={view === item.id ? 'active' : ''} aria-current={view === item.id ? 'page' : undefined} title={item.label} aria-label={item.label} onClick={() => setView(item.id)}>{item.icon}<span>{item.label}</span></button>)}
+      {items.filter((item) => item.id !== 'archive' || showArchive).map((item) => <button type="button" key={item.id} className={view === item.id ? 'active' : ''} aria-current={view === item.id ? 'page' : undefined} title={item.label} aria-label={item.label} onClick={() => setView(item.id)}>{item.icon}<span>{item.label}</span></button>)}
     </nav>
     <div className="side-spacer" />
     <div className="side-account"><span className="status-dot" /> <span>{quota ? `${quota.account_quotas?.length ?? 1} 个服务账号` : '服务账户'}</span></div>
@@ -198,7 +199,7 @@ function KeysPage({ keys, onCreate, onEdit, onReconcile, onRevoke, onReveal, onR
   </>
 }
 
-function UsagePage({ keys }: { keys: ClientKey[] }) {
+function UsagePage({ keys, adminKey }: { keys: ClientKey[]; adminKey: string }) {
   const [metric, setMetric] = useState<'anlas' | 'fixed' | 'purchased' | 'opus'>('anlas')
   const [includeRevoked, setIncludeRevoked] = useState(true)
   const visible = keys.filter((key) => includeRevoked || !key.revoked).sort((a, b) => committedAnlas(b) - committedAnlas(a))
@@ -208,17 +209,27 @@ function UsagePage({ keys }: { keys: ClientKey[] }) {
   return <>
     <div className="page-intro"><div><span className="eyebrow">USAGE ANALYTICS</span><h1>用量统计</h1><p>逐密钥累计估算</p></div></div>
     <div className="metric-grid three"><Metric icon={<CreditCard size={18} />} label="订阅点数" value={fmt(totalFixed)} detail="已计入用量" tone="blue" /><Metric icon={<CreditCard size={18} />} label="付费购入点数" value={fmt(totalPurchased)} detail="已计入用量" tone="orange" /><Metric icon={<Zap size={18} />} label="Opus 生成" value={fmt(totalOpus)} detail="已计入次数" tone="purple" /></div>
+    <UsageHeatmap adminKey={adminKey} />
     <section className="page-section"><div className="section-heading"><div><span className="eyebrow">DISTRIBUTION</span><h2>密钥用量分布</h2></div><div className="segmented" role="group" aria-label="用量类型">{([['anlas', '全部 Anlas'], ['fixed', '订阅点数'], ['purchased', '付费购入点数'], ['opus', 'Opus']] as const).map(([id, label]) => <button type="button" key={id} aria-pressed={metric === id} className={metric === id ? 'active' : ''} onClick={() => setMetric(id)}>{label}</button>)}</div></div><UsageBars keys={visible} metric={metric} limit={10} /></section>
     <section className="page-section usage-list"><div className="section-heading"><div><span className="eyebrow">PER KEY</span><h2>逐密钥明细</h2></div><label className="check-line"><input type="checkbox" checked={includeRevoked} onChange={(event) => setIncludeRevoked(event.target.checked)} /> 包含已撤销</label></div><div className="table-scroll"><table className="data-table"><thead><tr><th>密钥</th><th>订阅点数</th><th>付费购入点数</th><th>合计</th><th>Opus 次数</th><th>待核对 Anlas</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td>{fmt(Math.max(0, item.fixed_anlas_spent - item.fixed_anlas_pending))}</td><td>{fmt(Math.max(0, item.purchased_anlas_spent - item.purchased_anlas_pending))}</td><td><strong>{fmt(committedAnlas(item))}</strong></td><td>{fmt(committedOpus(item))}</td><td>{fmt(item.pending_anlas)}</td></tr>)}</tbody></table></div>{!visible.length && <div className="empty-state">暂无密钥用量</div>}</section>
   </>
 }
 
-function SettingsPage({ settings, busy, onChange }: { settings: AdminSettings | null; busy: boolean; onChange: (changes: Partial<AdminSettings>) => void }) {
+function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings: AdminSettings | null; busy: boolean; onChange: (changes: Partial<AdminSettings>) => void; onSaveAdminPath: (path: string) => Promise<void> }) {
   const [days, setDays] = useState(settings?.archive_retention_days ?? 30)
   const [capacity, setCapacity] = useState((settings?.archive_max_bytes ?? 20 * 1073741824) / 1073741824)
-  useEffect(() => { if (settings) { setDays(settings.archive_retention_days); setCapacity(settings.archive_max_bytes / 1073741824) } }, [settings])
+  const [adminPath, setAdminPath] = useState(settings?.admin_ui_path ?? '/console')
+  useEffect(() => { if (settings) { setDays(settings.archive_retention_days); setCapacity(settings.archive_max_bytes / 1073741824); setAdminPath(settings.admin_ui_path) } }, [settings])
+  const validAdminPath = adminPath.length <= 128 && /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(adminPath) && !['admin', 'ai', 'image', 'user', 'quota', 'healthz', 'jobs'].includes(adminPath.split('/')[1])
   return <>
     <div className="page-intro"><div><span className="eyebrow">CONFIGURATION</span><h1>配置</h1></div></div>
+    <section className="page-section settings-section"><div className="section-heading"><h2>管理页面入口</h2></div>
+      <form className="admin-path-settings" onSubmit={(event) => { event.preventDefault(); if (validAdminPath) void onSaveAdminPath(adminPath) }}>
+        <label htmlFor="admin-ui-path">访问路径</label>
+        <div className="admin-path-controls"><input id="admin-ui-path" value={adminPath} maxLength={128} spellCheck={false} autoCapitalize="off" autoComplete="off" disabled={!settings || busy} onChange={(event) => setAdminPath(event.target.value)} placeholder="/console" required /><button type="submit" disabled={!settings || busy || !validAdminPath || adminPath === settings.admin_ui_path}>保存并前往新地址</button></div>
+        <small>以 / 开头且不以 / 结尾，仅使用字母、数字、-、_ 和 /；不能占用 API 首段，管理 API 仍在 /admin/*。</small>
+      </form>
+    </section>
     <section className="page-section settings-section"><div className="section-heading"><h2>生成权限</h2></div>
       <div className="policy-row"><div className="policy-row-top"><div><strong>允许分配单次多图</strong><small>开启后可在单个密钥中单独授权；多图请求全部消耗点数，不使用 Opus 配额</small></div><label className="switch"><input type="checkbox" checked={settings?.allow_multi_image ?? false} disabled={!settings || busy} onChange={(event) => onChange({ allow_multi_image: event.target.checked })} aria-label="允许分配单次多图" /><span /></label></div></div>
     </section>
@@ -276,6 +287,7 @@ export function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [quota, setQuota] = useState<AdminQuota | null>(null)
   const [settings, setSettings] = useState<AdminSettings | null>(null)
+  const [archiveStats, setArchiveStats] = useState<ArchiveStats | null>(null)
   const [quotaError, setQuotaError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -292,13 +304,14 @@ export function App() {
     setAccounts([])
     setQuota(null)
     setSettings(null)
+    setArchiveStats(null)
     setError(null)
     setDialog(null)
   }, [])
 
   const load = useCallback(async (key: string) => {
     setLoading(true)
-    const [keyResult, quotaResult, settingsResult, accountResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key), api.accounts(key)])
+    const [keyResult, quotaResult, settingsResult, accountResult, archiveResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key), api.accounts(key), api.imageStats(key)])
     if (keyResult.status === 'rejected') {
       if (keyResult.reason instanceof ApiError && keyResult.reason.status === 401) logout()
       else setError(describeError(keyResult.reason))
@@ -317,10 +330,13 @@ export function App() {
     else setError(describeError(settingsResult.reason))
     if (accountResult.status === 'fulfilled') setAccounts(accountResult.value)
     else setError(describeError(accountResult.reason))
+    if (archiveResult.status === 'fulfilled') setArchiveStats(archiveResult.value)
     setLoading(false)
   }, [logout])
 
   useEffect(() => { if (adminKey) void load(adminKey) }, [adminKey, load])
+  const showArchive = settings?.archive_enabled !== false || archiveStats === null || archiveStats.ever_archived || archiveStats.count > 0 || archiveStats.pending > 0
+  useEffect(() => { if (!showArchive && view === 'archive') setView('usage') }, [showArchive, view])
 
   const connect = async (key: string) => {
     setBusy(true)
@@ -351,6 +367,20 @@ export function App() {
   const changeSettings = (changes: Partial<AdminSettings>) => mutate(async () => {
     setSettings(await api.updateSettings(adminKey, changes))
   })
+
+  const changeAdminPath = async (path: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const next = await api.updateSettings(adminKey, { admin_ui_path: path })
+      setSettings(next)
+      window.location.assign(`${next.admin_ui_path}/`)
+    } catch (cause) {
+      setError(describeError(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const startCreateKey = () => {
     if (accounts.some((account) => account.enabled)) setDialog({ type: 'create' })
@@ -410,7 +440,7 @@ export function App() {
   if (!adminKey) return <Login onConnect={connect} busy={busy} error={error} />
 
   return <div className="app-shell">
-    <Sidebar view={view} setView={setView} quota={quota} onLogout={logout} />
+    <Sidebar view={view} setView={setView} quota={quota} showArchive={showArchive} onLogout={logout} />
     <div className="main-shell">
       <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'queue' ? '任务队列' : view === 'accounts' ? '账号管理' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : view === 'archive' ? '生成图库' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
       <main className="content">
@@ -419,9 +449,9 @@ export function App() {
         {view === 'queue' && <QueuePage adminKey={adminKey} keys={keys} onAuthFailure={logout} />}
         {view === 'accounts' && <AccountsPage accounts={accounts} keys={keys} quota={quota} busy={busy} onCreate={() => setDialog({ type: 'account-create' })} onEdit={(account) => setDialog({ type: 'account-edit', account })} onDelete={(account) => setDialog({ type: 'account-delete', account })} onRefresh={(account) => void refreshAccount(account)} />}
         {view === 'keys' && <KeysPage keys={keys} onCreate={startCreateKey} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} onReveal={(key) => { if (key.key) { setCopied(false); setDialog({ type: 'reveal', key: key.key, name: key.name }) } }} onRotate={(key) => setDialog({ type: 'rotate', key })} />}
-        {view === 'usage' && <UsagePage keys={keys} />}
-        {view === 'archive' && <ArchivePage adminKey={adminKey} keys={keys} />}
-        {view === 'settings' && <SettingsPage settings={settings} busy={busy} onChange={(changes) => void changeSettings(changes)} />}
+        {view === 'usage' && <UsagePage keys={keys} adminKey={adminKey} />}
+        {view === 'archive' && showArchive && <ArchivePage adminKey={adminKey} keys={keys} onStatsChange={setArchiveStats} />}
+        {view === 'settings' && <SettingsPage settings={settings} busy={busy} onChange={(changes) => void changeSettings(changes)} onSaveAdminPath={changeAdminPath} />}
       </main>
     </div>
     {(dialog?.type === 'create' || dialog?.type === 'edit') && <Modal title={dialog.type === 'create' ? '签发密钥' : `编辑 ${dialog.key.name}`} onClose={() => setDialog(null)}><KeyForm existing={dialog.type === 'edit' ? dialog.key : undefined} accounts={accounts} multiImageAvailable={settings?.allow_multi_image ?? false} busy={busy} error={error} onSave={savePolicy} onClose={() => setDialog(null)} /></Modal>}

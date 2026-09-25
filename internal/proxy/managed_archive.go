@@ -359,6 +359,9 @@ func (a *archiveManager) process(work archiveWork) (retErr error) {
 			return err
 		}
 	}
+	if _, err := tx.Exec("INSERT INTO meta(name,value) VALUES('archive_ever','1') ON CONFLICT(name) DO UPDATE SET value='1'"); err != nil {
+		return err
+	}
 	err = tx.Commit()
 	return err
 }

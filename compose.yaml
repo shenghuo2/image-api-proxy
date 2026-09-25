@@ -1,5 +1,6 @@
 services:
   proxy:
+    image: shenghuo2/novelai-api-proxy:v0.1.3
     build: .
     restart: unless-stopped
     stop_grace_period: 8m

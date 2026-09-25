@@ -69,12 +69,12 @@ func main() {
 		}
 	}
 	if frontendDir != "" {
-		appHandler, err = mountFrontend(appHandler, frontendDir)
+		appHandler, err = mountFrontend(appHandler, frontendDir, handler.AdminUIPath)
 		if err != nil {
 			logger.Error("invalid frontend build", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("serving frontend", "directory", frontendDir)
+		logger.Info("serving frontend", "directory", frontendDir, "path", handler.AdminUIPath())
 	}
 
 	addr := os.Getenv("PROXY_LISTEN_ADDR")
