@@ -8,15 +8,26 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestGenerationHoursWithoutArchive(t *testing.T) {
 	image := archiveTestPNG(color.RGBA{G: 255, A: 255})
+	finalFrame := archiveTestFrame(map[string]any{"code": 200, "step_ix": nil, "image": image})
+	errorFrame := archiveTestFrame(map[string]any{"code": 500, "step_ix": nil, "image": image})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/user/subscription" {
 			_, _ = io.WriteString(w, `{"active":true,"tier":2,"trainingStepsLeft":{"fixedTrainingStepsLeft":1000,"purchasedTrainingSteps":0}}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "generate-image-stream") {
+			if r.Header.Get("X-Correlation-Id") == "stream-error" {
+				_, _ = w.Write(errorFrame)
+			} else {
+				_, _ = w.Write(finalFrame)
+			}
 			return
 		}
 		switch r.Header.Get("X-Correlation-Id") {
@@ -41,9 +52,10 @@ func TestGenerationHoursWithoutArchive(t *testing.T) {
 	body := map[string]any{"model": "nai-diffusion-4-5-full", "parameters": map[string]any{"width": 512, "height": 512, "steps": 12, "n_samples": 1}}
 	for _, tc := range []struct {
 		marker string
+		path   string
 		status int
-	}{{"good-1", 200}, {"failed", 500}, {"empty", 200}, {"good-2", 200}} {
-		request := managedRequest(t, http.MethodPost, server.URL+"/ai/generate-image", key, body)
+	}{{"good-1", "/ai/generate-image", 200}, {"failed", "/ai/generate-image", 500}, {"empty", "/ai/generate-image", 200}, {"good-2", "/ai/generate-image", 200}, {"stream-error", "/ai/generate-image-stream", 200}, {"stream-good", "/image/ai/generate-image-stream", 200}} {
+		request := managedRequest(t, http.MethodPost, server.URL+tc.path, key, body)
 		request.Header.Set("X-Correlation-Id", tc.marker)
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
@@ -73,7 +85,7 @@ func TestGenerationHoursWithoutArchive(t *testing.T) {
 		var result struct {
 			Hours []usageHour `json:"hours"`
 		}
-		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Hours) != 1 || result.Hours[0].Count != 2 || result.Hours[0].Generations != 2 {
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Hours) != 1 || result.Hours[0].Count != 3 || result.Hours[0].Generations != 3 {
 			t.Fatalf("usage heatmap: %d %s", response.Code, response.Body.String())
 		}
 	}
@@ -114,5 +126,27 @@ func TestUsageQuarterLocalOffset(t *testing.T) {
 	}
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Hours) != 1 || result.Hours[0].Date != "2026-09-25" || result.Hours[0].Hour != 0 || result.Hours[0].Count != 3 || result.Hours[0].Generations != 2 {
 		t.Fatalf("local usage hour: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestStreamOutcomeRejectsIncompleteAndErrorFrames(t *testing.T) {
+	image := archiveTestPNG(color.RGBA{R: 255, A: 255})
+	final := archiveTestFrame(map[string]any{"code": 200, "step_ix": nil, "image": image})
+	failure := archiveTestFrame(map[string]any{"code": 500, "step_ix": nil, "image": image})
+	monitor := &streamOutcome{}
+	for i := range final {
+		monitor.write(final[i : i+1])
+	}
+	if !monitor.success() {
+		t.Fatal("fragmented final frame was not recognized")
+	}
+	monitor.write(failure)
+	if monitor.success() {
+		t.Fatal("error frame after final frame was accepted")
+	}
+	partial := &streamOutcome{}
+	partial.write(final[:len(final)-1])
+	if partial.success() {
+		t.Fatal("truncated final frame was accepted")
 	}
 }

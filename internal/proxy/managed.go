@@ -628,6 +628,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	upstreamRequest.Body = io.NopCloser(bytes.NewReader(body))
 	upstreamRequest.ContentLength = int64(len(body))
 	tracked := &statusWriter{ResponseWriter: w}
+	if strings.HasSuffix(selected.path, "/ai/generate-image-stream") {
+		tracked.stream = &streamOutcome{}
+	}
 	var capture *archiveWriter
 	archiveEnabled := (strings.HasSuffix(selected.path, "/ai/generate-image") || strings.HasSuffix(selected.path, "/ai/generate-image-stream")) && h.settings.snapshot().ArchiveEnabled && !current.ArchiveDisabled
 	if archiveEnabled {
@@ -681,7 +684,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 			q.OpusJobsSinceRefresh -= hold.Opus
 		}
 	}
-	if err == nil && !refund && cost.Samples > 0 && tracked.bodyBytes > 0 {
+	if err == nil && !refund && cost.Samples > 0 && tracked.bodyBytes > 0 && tracked.generatedImage() {
 		if saveErr := h.db.recordGeneration(time.Now(), cost.Samples); saveErr != nil {
 			slog.Warn("generation activity unavailable", "error", saveErr)
 		}

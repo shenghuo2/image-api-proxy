@@ -171,7 +171,7 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
 
 `/admin/images/stats` 返回 `count`、`bytes`、`pending`、`failures`、`last_error` 和 `ever_archived`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。`ever_archived` 成功归档后永久为 `true`，删除或清理全部图片也不重置。升级时仅能从仍存在的旧图片回填。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
 
-`GET /admin/usage/hours` 接受与 `/admin/images/overview` 相同的 `from`、`to`、`offset_minutes` 参数，返回 `hours` 数组；每项有本地 `date`、`hour`、`count`（成功响应的生成图片张数）和 `generations`（请求次数）。从 `v0.1.3` 起，生成响应为非空 `2xx`、连接未断开且额度结算成功时写入本地 SQLite，普通、流式、`/image` 别名和持久化任务均参与；不依赖归档开关。旧请求缺少完成时间，无法回填。时间数据按 15 分钟聚合，只用于管理统计，不调用官方额度接口。
+`GET /admin/usage/hours` 接受与 `/admin/images/overview` 相同的 `from`、`to`、`offset_minutes` 参数，返回 `hours` 数组；每项有本地 `date`、`hour`、`count`（成功响应的生成图片张数）和 `generations`（请求次数）。从 `v0.1.3` 起，生成响应为非空 `2xx`、连接未断开、额度结算成功，且普通响应带 PNG/ZIP 文件头或流式响应包含完整最终成图帧时，写入本地 SQLite。普通、流式、`/image` 别名和持久化任务均参与；不依赖归档开关。旧请求缺少完成时间，无法回填。时间数据按 15 分钟聚合，只用于管理统计，不调用官方额度接口。
 
 ## 排队与结算
 
