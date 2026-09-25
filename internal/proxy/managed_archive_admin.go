@@ -23,7 +23,35 @@ type archiveImage struct {
 	Bytes     int64     `json:"bytes"`
 }
 
+type archiveIPCount struct {
+	IP    string `json:"ip"`
+	Count int64  `json:"count"`
+}
+
+type archiveHour struct {
+	Date  string `json:"date"`
+	Hour  int    `json:"hour"`
+	Count int64  `json:"count"`
+}
+
+type archiveKeySummary struct {
+	KeyID    string    `json:"key_id"`
+	KeyName  string    `json:"key_name"`
+	Count    int64     `json:"count"`
+	Bytes    int64     `json:"bytes"`
+	IPCount  int64     `json:"ip_count"`
+	LatestAt time.Time `json:"latest_at"`
+}
+
 func (h *ManagedHandler) serveAdminImages(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/admin/images/ips" && r.Method == http.MethodGet {
+		h.listAdminImageIPs(w, r)
+		return
+	}
+	if r.URL.Path == "/admin/images/overview" && r.Method == http.MethodGet {
+		h.adminImageOverview(w, r)
+		return
+	}
 	if r.URL.Path == "/admin/images/stats" && r.Method == http.MethodGet {
 		var count, bytes, failures, pending int64
 		var last string
@@ -96,6 +124,114 @@ func (h *ManagedHandler) serveAdminImages(w http.ResponseWriter, r *http.Request
 	_, _ = io.Copy(w, f)
 }
 
+func (h *ManagedHandler) listAdminImageIPs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	for key := range q {
+		if key != "q" {
+			http.Error(w, "invalid filter", http.StatusBadRequest)
+			return
+		}
+	}
+	search := strings.TrimSpace(q.Get("q"))
+	if len(search) > 45 {
+		http.Error(w, "invalid IP search", http.StatusBadRequest)
+		return
+	}
+	rows, err := h.db.db.Query("SELECT ip,COUNT(*) FROM images WHERE ip<>'' AND instr(lower(ip),lower(?))>0 GROUP BY ip ORDER BY COUNT(*) DESC,ip LIMIT 501", search)
+	if err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	items := []archiveIPCount{}
+	for rows.Next() {
+		var item archiveIPCount
+		if err := rows.Scan(&item.IP, &item.Count); err != nil {
+			_ = rows.Close()
+			http.Error(w, "archive unavailable", http.StatusInternalServerError)
+			return
+		}
+		items = append(items, item)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	truncated := len(items) > 500
+	if truncated {
+		items = items[:500]
+	}
+	jsonReply(w, http.StatusOK, map[string]any{"items": items, "truncated": truncated})
+}
+
+func (h *ManagedHandler) adminImageOverview(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	for key := range q {
+		if key != "from" && key != "to" && key != "offset_minutes" {
+			http.Error(w, "invalid filter", http.StatusBadRequest)
+			return
+		}
+	}
+	start, startErr := time.Parse(time.RFC3339, q.Get("from"))
+	end, endErr := time.Parse(time.RFC3339, q.Get("to"))
+	offset, offsetErr := strconv.Atoi(q.Get("offset_minutes"))
+	if startErr != nil || endErr != nil || offsetErr != nil || !end.After(start) || end.Sub(start) > 8*24*time.Hour || offset < -840 || offset > 840 {
+		http.Error(w, "invalid time range", http.StatusBadRequest)
+		return
+	}
+	var count, bytes, ipCount, keyCount, groupCount int64
+	if err := h.db.db.QueryRow("SELECT COUNT(*),COALESCE(SUM(bytes),0),COUNT(DISTINCT NULLIF(ip,'')),COUNT(DISTINCT key_id),COUNT(DISTINCT group_id) FROM images").Scan(&count, &bytes, &ipCount, &keyCount, &groupCount); err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	rows, err := h.db.db.Query("SELECT strftime('%Y-%m-%d',created_at-?*60,'unixepoch'),CAST(strftime('%H',created_at-?*60,'unixepoch') AS INTEGER),COUNT(*) FROM images WHERE created_at>=? AND created_at<? GROUP BY 1,2 ORDER BY 1,2", offset, offset, start.Unix(), end.Unix())
+	if err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	hours := []archiveHour{}
+	for rows.Next() {
+		var hour archiveHour
+		if err := rows.Scan(&hour.Date, &hour.Hour, &hour.Count); err != nil {
+			_ = rows.Close()
+			http.Error(w, "archive unavailable", http.StatusInternalServerError)
+			return
+		}
+		hours = append(hours, hour)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	rows, err = h.db.db.Query("SELECT key_id,MAX(key_name),COUNT(*),COALESCE(SUM(bytes),0),COUNT(DISTINCT ip),MAX(created_at) FROM images GROUP BY key_id ORDER BY COUNT(*) DESC,key_id")
+	if err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	keys := []archiveKeySummary{}
+	for rows.Next() {
+		var item archiveKeySummary
+		var latest int64
+		if err := rows.Scan(&item.KeyID, &item.KeyName, &item.Count, &item.Bytes, &item.IPCount, &latest); err != nil {
+			_ = rows.Close()
+			http.Error(w, "archive unavailable", http.StatusInternalServerError)
+			return
+		}
+		item.LatestAt = time.Unix(latest, 0).UTC()
+		keys = append(keys, item)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	jsonReply(w, http.StatusOK, map[string]any{"count": count, "bytes": bytes, "ip_count": ipCount, "key_count": keyCount, "group_count": groupCount, "hours": hours, "keys": keys})
+}
+
 func validImageID(id string) bool {
 	if len(id) != 35 || id[32] != '_' {
 		return false
@@ -118,7 +254,7 @@ func validImageID(id string) bool {
 func (h *ManagedHandler) listAdminImages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	for key := range q {
-		if key != "key_id" && key != "ip" && key != "from" && key != "to" && key != "page" {
+		if key != "key_id" && key != "ip" && key != "exclude_ip" && key != "from" && key != "to" && key != "page" {
 			http.Error(w, "invalid filter", 400)
 			return
 		}
@@ -138,13 +274,24 @@ func (h *ManagedHandler) listAdminImages(w http.ResponseWriter, r *http.Request)
 		where = append(where, "key_id=?")
 		args = append(args, key)
 	}
-	if ip := q.Get("ip"); ip != "" {
-		if len(ip) > 45 {
-			http.Error(w, "invalid IP", 400)
-			return
+	include, exclude := q["ip"], q["exclude_ip"]
+	if (len(include) > 0 && len(exclude) > 0) || len(include) > 100 || len(exclude) > 100 {
+		http.Error(w, "invalid IP filter", http.StatusBadRequest)
+		return
+	}
+	selected, operator := include, "IN"
+	if len(exclude) > 0 {
+		selected, operator = exclude, "NOT IN"
+	}
+	if len(selected) > 0 {
+		for _, ip := range selected {
+			if ip == "" || len(ip) > 45 {
+				http.Error(w, "invalid IP", http.StatusBadRequest)
+				return
+			}
+			args = append(args, ip)
 		}
-		where = append(where, "ip=?")
-		args = append(args, ip)
+		where = append(where, "ip "+operator+" ("+strings.TrimSuffix(strings.Repeat("?,", len(selected)), ",")+")")
 	}
 	for _, field := range []string{"from", "to"} {
 		if value := q.Get(field); value != "" {

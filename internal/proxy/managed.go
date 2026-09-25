@@ -189,7 +189,7 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images") {
+	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images" && r.URL.Path != "/admin/images/ips" && r.URL.Path != "/admin/images/overview") {
 		http.Error(w, "unsupported request target", http.StatusBadRequest)
 		return
 	}
