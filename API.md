@@ -83,8 +83,10 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `GET /admin/queue` | 读取当前执行请求、等待池顺序、持久化任务 ID、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
 | `GET /admin/settings` | 查看全局多图及归档设置 |
 | `PUT /admin/settings` | 部分更新设置，例如 `{"archive_enabled":true,"archive_retention_days":-1,"archive_max_bytes":21474836480}` |
-| `GET /admin/images` | 按 `key_id`、`ip`、`from`、`to`、`page` 筛选归档；时间用 RFC 3339，固定每页 24 张 |
+| `GET /admin/images` | 按 `key_id`、重复的 `ip` 或 `exclude_ip`、`from`、`to`、`page` 筛选归档；固定每页 24 张 |
 | `GET /admin/images/stats` | 返回图片数、占用字节、待处理数、失败次数和最近错误 |
+| `GET /admin/images/ips` | 返回 IP 与对应图片数；可用 `q` 搜索，单次最多返回 500 个 |
+| `GET /admin/images/overview` | 返回全量汇总、按 key 统计和指定窗口内逐小时生成数 |
 | `GET /admin/images/{id}/thumbnail` | 返回管理员认证的 JPEG 缩略图，不超过 100 KiB |
 | `GET /admin/images/{id}/original` | 下载原始 PNG |
 | `DELETE /admin/images/{id}` | 删除单张图片及其缩略图 |
@@ -137,9 +139,20 @@ curl -H "Authorization: Bearer $ADMIN_KEY" "$BASE/admin/images/stats"
 curl --get "$BASE/admin/images" \
   -H "Authorization: Bearer $ADMIN_KEY" \
   --data-urlencode "key_id=$KEY_ID" \
-  --data-urlencode 'ip=198.51.100.7' \
+  --data-urlencode 'exclude_ip=198.51.100.7' \
+  --data-urlencode 'exclude_ip=203.0.113.24' \
   --data-urlencode 'from=2026-09-01T00:00:00Z' \
   --data-urlencode 'page=1'
+
+curl -H "Authorization: Bearer $ADMIN_KEY" "$BASE/admin/images/ips"
+curl --get "$BASE/admin/images/ips" \
+  -H "Authorization: Bearer $ADMIN_KEY" --data-urlencode 'q=2001:db8'
+
+curl --get "$BASE/admin/images/overview" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  --data-urlencode 'from=2026-09-18T16:00:00Z' \
+  --data-urlencode 'to=2026-09-25T16:00:00Z' \
+  --data-urlencode 'offset_minutes=-480'
 
 curl -H "Authorization: Bearer $ADMIN_KEY" \
   "$BASE/admin/images/$IMAGE_ID/thumbnail" --output thumbnail.jpg
@@ -149,7 +162,11 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
   "$BASE/admin/images/$IMAGE_ID"
 ```
 
-列表还可用 `to` 筛选结束时间，`from` 和 `to` 都使用 RFC 3339 时间；`ip` 为精确匹配。列表按完成时间倒序，固定每页 24 张，返回 `items`、`total`、`page` 和 `page_size`；每项的 `group_size` 表示同组图片总数。统计接口返回 `count`、`bytes`、`pending`、`failures` 和 `last_error`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
+列表还可用 `to` 筛选结束时间，`from` 和 `to` 都使用 RFC 3339 时间。重复传 `ip` 表示包含这些精确 IP，重复传 `exclude_ip` 表示排除这些 IP；两者不能同时使用，单次最多指定 100 个。原有的单个 `ip` 用法保持兼容。列表按完成时间倒序，固定每页 24 张，返回 `items`、`total`、`page` 和 `page_size`；每项的 `group_size` 表示同组图片总数。
+
+`/admin/images/ips` 返回按图片数降序排列的 `items`（每项有 `ip`、`count`）和 `truncated`。不带 `q` 时，IP 总数不超过 500 会全部列出；超过时先返回前 500 个，再用 `q` 子串搜索其余地址。`/admin/images/overview` 要求 `from`、`to` 为 RFC 3339，窗口不超过 8 天，`offset_minutes` 为浏览器当前的 UTC 减本地时间分钟数（例如 UTC+8 为 `-480`）；`to` 不包含在窗口内。它返回全部归档的 `count`、`bytes`、`ip_count`、`key_count`、`group_count` 和按 key 汇总的 `keys`，以及窗口内的 `hours`（本地日期、0–23 点、图片数）。管理页用最近 7 个本地日绘制逐小时热力图；统计查询只访问本地 SQLite，不请求官方额度。
+
+`/admin/images/stats` 返回 `count`、`bytes`、`pending`、`failures` 和 `last_error`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
 
 ## 排队与结算
 
