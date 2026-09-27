@@ -201,7 +201,7 @@ func TestVersionOneSQLiteUpgradePreservesArchiveAndAddsUsage(t *testing.T) {
 	}
 	var version, images int
 	var ever string
-	if err := upgraded.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+	if err := upgraded.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
 	if err := upgraded.db.QueryRow("SELECT COUNT(*) FROM images").Scan(&images); err != nil || images != 1 {
@@ -216,5 +216,31 @@ func TestVersionOneSQLiteUpgradePreservesArchiveAndAddsUsage(t *testing.T) {
 	var generated int
 	if err := upgraded.db.QueryRow("SELECT images FROM usage_quarters").Scan(&generated); err != nil || generated != 2 {
 		t.Fatalf("usage images=%d err=%v", generated, err)
+	}
+}
+
+func TestVersionTwoSQLiteUpgradeAddsOpusLedger(t *testing.T) {
+	path := unversionedStateFixture(t, `{"allow_multi_image":true}`)
+	db, err := sql.Open("sqlite", path+".sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE opus_accounts"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version=2"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	upgraded, keys, accounts, _, jobs, err := openFixtureState(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.db.Close()
+	if len(keys.keys) != 1 || len(accounts.accounts) != 1 || len(jobs.jobs) != 1 {
+		t.Fatal("Opus schema upgrade changed existing state")
+	}
+	if err := checkStateSchema(upgraded.db, stateSchemaVersion); err != nil {
+		t.Fatal(err)
 	}
 }

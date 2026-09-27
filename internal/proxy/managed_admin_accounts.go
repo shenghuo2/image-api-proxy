@@ -298,14 +298,24 @@ func (h *ManagedHandler) serveAccountQuota(w http.ResponseWriter, r *http.Reques
 
 func accountQuotaView(account upstreamAccount, q *quotaSnapshot, keys []clientKey) map[string]any {
 	fixed, purchased := totalRemainingForAccount(keys, account.ID)
+	opusAllocatedImages := opusAllocated(keys, account.ID) / opusUnit
+	opusAvailableImages := opusUnits(q.projectedOpusPercent()) / opusUnit
+	if q.Official.Tier != 3 || (!q.Official.Active && !q.Official.Grace) {
+		opusAllocatedImages = 0
+	}
 	return map[string]any{
 		"account_id": account.ID, "name": account.Name,
 		"upstream_fixed_anlas": q.Official.Fixed, "upstream_purchased_anlas": q.Official.Purchased,
 		"projected_fixed_anlas": q.Fixed, "projected_purchased_anlas": q.Purchased,
 		"allocated_fixed_anlas": fixed, "allocated_purchased_anlas": purchased,
 		"unallocated_fixed_anlas": max(0, q.Fixed-fixed), "unallocated_purchased_anlas": max(0, q.Purchased-purchased),
-		"projected_opus_percent": q.projectedOpusPercent(),
-		"active":                 q.Official.Active, "isGracePeriod": q.Official.Grace, "tier": q.Official.Tier,
+		"projected_opus_percent":  q.projectedOpusPercent(),
+		"allocated_opus_images":   opusAllocatedImages,
+		"unallocated_opus_images": max(0, opusAvailableImages-opusAllocatedImages),
+		"opus_predicted":          q.OpusPredicted,
+		"opus_confirmed_at":       q.Refreshed,
+		"opus_next_percent_at":    q.OpusNextPercentAt,
+		"active":                  q.Official.Active, "isGracePeriod": q.Official.Grace, "tier": q.Official.Tier,
 		"snapshot_age_seconds": int64(time.Since(q.Refreshed).Seconds()),
 	}
 }

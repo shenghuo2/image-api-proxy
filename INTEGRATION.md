@@ -6,11 +6,11 @@
 
 ## 1. 获取客户端 key
 
-由管理员在管理面板为接入项目签发一把客户端 key，开启所需的订阅点数、付费购入点数或 Opus 配额权限，并设置累计上限。建议每个项目使用独立的 key，便于撤销和查看用量。新 key 使用 `pst-` 加 24 位随机字符；管理员可在管理面板再次查看。旧版 key 需轮换后才可查看明文，轮换会使旧 key 立即失效。接入项目仍应将 key 保存在服务端密钥配置中。
+由管理员在管理面板为接入项目签发一把客户端 key，开启所需的订阅点数、付费购入点数或 Opus 配额权限，并设置相应限制。建议每个项目使用独立的 key，便于撤销和查看用量。新 key 使用 `pst-` 加 24 位随机字符；管理员可在管理面板再次查看。旧版 key 需轮换后才可查看明文，轮换会使旧 key 立即失效。接入项目仍应将 key 保存在服务端密钥配置中。
 
 新 key 默认在所有已启用的服务账号之间轮询；管理员也可将它固定到一个账号。账号选择是代理内部策略，不改变客户端的官方请求格式。停用账号后，池模式会跳过它；固定在该账号的 key 会暂时不可用。
 
-本地累计上限可设为 `-1`，表示不再另设每把 key 的累计限制，实际使用仍受官方账户余额约束。Opus 可按次数或按满额百分比限制；百分比按估算满额 1730 次向下折算，例如 10% 为 173 次。
+本地累计上限可设为 `-1`，表示不再另设每把 key 的累计限制，实际使用仍受官方账户余额约束。Opus 的“按次数”模式也是累计上限；“按比例自动回充”模式为每把 key 保留独立余额，并按官方回充份额补入，最多存到所配置的满额比例。接入时官方若只剩 55%，配置 33% 的 key 起始约有满额的 18.15%，之后最多回充到满额的 33%。次数是按估算满额 1730 次换算，实际请求始终受官方余额约束。
 
 接入项目只需知道代理根地址和这把客户端 key。代理在转发请求时将客户端 key 替换为服务端持有的 NovelAI Token；接入项目不需要持有官方 Token。
 
@@ -134,7 +134,7 @@ with open("request.json", "rb") as source:
 | `account_id` | `pool` 为已启用账号轮询，否则为固定账号 ID |
 | `allow_fixed_anlas`、`fixed_anlas_limit`、`fixed_anlas_spent`、`fixed_anlas_pending`、`fixed_anlas_remaining` | 订阅点数权限、累计上限、估算已用、待核对和本地剩余 |
 | `allow_purchased_anlas` 及对应的 `purchased_anlas_*` | 付费购入点数的同类数据 |
-| `allow_opus`、`opus_limit_images`、`opus_limit_mode`、`opus_limit_percent`、`opus_effective_limit_images`、`opus_used_images`、`opus_pending_images`、`opus_remaining_images` | Opus 免费生成权限、限制模式和次数；百分比按满额约 1730 次折算 |
+| `allow_opus`、`opus_limit_images`、`opus_limit_mode`、`opus_limit_percent`、`opus_effective_limit_images`、`opus_used_images`、`opus_pending_images`、`opus_remaining_images` | Opus 免费生成权限；`images` 为累计上限，`percent` 为自动回充额度条；已用量始终累计，剩余量随回充变化 |
 | `allow_multi_image` | 此 key 的多图授权；还需全局配置开启才生效 |
 | `allocated_anlas`、`spent_anlas`、`pending_anlas`、`remaining_anlas` | 两类点数的合计 |
 | `queue_length` | 当前排队长度 |

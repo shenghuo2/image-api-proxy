@@ -23,6 +23,10 @@ export interface ClientKey {
   opus_used_images: number
   opus_pending_images: number
   opus_remaining_images: number
+  opus_predicted: boolean
+  opus_confirmed_at?: string
+  opus_pending_by_account?: Record<string, number>
+  opus_share_warning: boolean
   allocated_anlas: number
   spent_anlas: number
   pending_anlas: number
@@ -77,6 +81,11 @@ export interface AccountQuota {
   unallocated_fixed_anlas: number
   unallocated_purchased_anlas: number
   projected_opus_percent: number
+  allocated_opus_images: number
+  unallocated_opus_images: number
+  opus_predicted: boolean
+  opus_confirmed_at: string
+  opus_next_percent_at: string
   active: boolean
   isGracePeriod: boolean
   tier: number
@@ -207,7 +216,7 @@ export const api = {
   updateKey: (key: string, id: string, policy: KeyPolicy) => request<ClientKey>(key, `/admin/keys/${id}`, 'PUT', policy),
   revokeKey: (key: string, id: string) => request<void>(key, `/admin/keys/${id}`, 'DELETE'),
   rotateKey: (key: string, id: string) => request<{ key: string; client: ClientKey }>(key, `/admin/keys/${id}/rotate`, 'POST'),
-  reconcile: (key: string, id: string, charged: number, opus: number) => request<ClientKey>(key, `/admin/keys/${id}/reconcile`, 'POST', { charged_anlas: charged, opus_charged_images: opus }),
+  reconcile: (key: string, id: string, charged: number, opus: number, byAccount?: Record<string, number>) => request<ClientKey>(key, `/admin/keys/${id}/reconcile`, 'POST', { charged_anlas: charged, opus_charged_images: opus, ...(byAccount ? { opus_charged_by_account: byAccount } : {}) }),
 }
 
 export async function imageBlob(key: string, id: string, kind: 'thumbnail' | 'original'): Promise<Blob> {

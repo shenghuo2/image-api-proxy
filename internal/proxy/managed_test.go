@@ -1014,3 +1014,18 @@ func TestProjectedEmptyOpusBatteryRequiresOfficialExhaustion(t *testing.T) {
 		t.Fatalf("officially exhausted battery: hold=%+v, err=%v", hold, err)
 	}
 }
+
+func TestProjectedOpusPercentRequiresEligibleSubscription(t *testing.T) {
+	q := &quotaSnapshot{Official: upstreamQuota{Tier: 0, OpusKnown: true, OpusPercent: 56}}
+	if got := q.projectedOpusPercent(); got != 0 {
+		t.Fatalf("Tier 0 reported usable Opus balance: %v", got)
+	}
+	q.Official.Tier = 3
+	if got := q.projectedOpusPercent(); got != 0 {
+		t.Fatalf("inactive Tier 3 reported usable Opus balance: %v", got)
+	}
+	q.Official.Grace = true
+	if got := q.projectedOpusPercent(); got != 56 {
+		t.Fatalf("grace-period Tier 3 lost Opus balance: %v", got)
+	}
+}

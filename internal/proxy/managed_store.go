@@ -15,47 +15,49 @@ import (
 )
 
 type clientKey struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	AccountID        string  `json:"account_id,omitempty"`
-	Hash             string  `json:"hash"`
-	KeyCiphertext    string  `json:"key_ciphertext,omitempty"`
-	PolicyVersion    int     `json:"policy_version"`
-	AllowFixed       bool    `json:"allow_fixed_anlas"`
-	FixedLimit       int64   `json:"fixed_anlas_limit"`
-	FixedSpent       int64   `json:"fixed_anlas_spent"`
-	FixedPending     int64   `json:"fixed_anlas_pending"`
-	AllowPurchased   bool    `json:"allow_purchased_anlas"`
-	PurchasedLimit   int64   `json:"purchased_anlas_limit"`
-	PurchasedSpent   int64   `json:"purchased_anlas_spent"`
-	PurchasedPending int64   `json:"purchased_anlas_pending"`
-	AllowOpus        bool    `json:"allow_opus"`
-	AllowMultiImage  bool    `json:"allow_multi_image"`
-	ArchiveDisabled  bool    `json:"archive_disabled,omitempty"`
-	OpusLimit        int64   `json:"opus_limit_images"`
-	OpusLimitMode    string  `json:"opus_limit_mode,omitempty"`
-	OpusLimitPercent float64 `json:"opus_limit_percent,omitempty"`
-	OpusUsed         int64   `json:"opus_used_images"`
-	OpusPending      int64   `json:"opus_pending_images"`
-	QueueLimit       *int    `json:"queue_limit,omitempty"`
-	Revoked          bool    `json:"revoked"`
-	Allocated        int64   `json:"allocated,omitempty"`
-	Spent            int64   `json:"spent,omitempty"`
-	Pending          int64   `json:"pending,omitempty"`
+	ID               string                `json:"id"`
+	Name             string                `json:"name"`
+	AccountID        string                `json:"account_id,omitempty"`
+	Hash             string                `json:"hash"`
+	KeyCiphertext    string                `json:"key_ciphertext,omitempty"`
+	PolicyVersion    int                   `json:"policy_version"`
+	AllowFixed       bool                  `json:"allow_fixed_anlas"`
+	FixedLimit       int64                 `json:"fixed_anlas_limit"`
+	FixedSpent       int64                 `json:"fixed_anlas_spent"`
+	FixedPending     int64                 `json:"fixed_anlas_pending"`
+	AllowPurchased   bool                  `json:"allow_purchased_anlas"`
+	PurchasedLimit   int64                 `json:"purchased_anlas_limit"`
+	PurchasedSpent   int64                 `json:"purchased_anlas_spent"`
+	PurchasedPending int64                 `json:"purchased_anlas_pending"`
+	AllowOpus        bool                  `json:"allow_opus"`
+	AllowMultiImage  bool                  `json:"allow_multi_image"`
+	ArchiveDisabled  bool                  `json:"archive_disabled,omitempty"`
+	OpusLimit        int64                 `json:"opus_limit_images"`
+	OpusLimitMode    string                `json:"opus_limit_mode,omitempty"`
+	OpusLimitPercent float64               `json:"opus_limit_percent,omitempty"`
+	OpusUsed         int64                 `json:"opus_used_images"`
+	OpusPending      int64                 `json:"opus_pending_images"`
+	OpusBuckets      map[string]opusBucket `json:"opus_buckets,omitempty"`
+	QueueLimit       *int                  `json:"queue_limit,omitempty"`
+	Revoked          bool                  `json:"revoked"`
+	Allocated        int64                 `json:"allocated,omitempty"`
+	Spent            int64                 `json:"spent,omitempty"`
+	Pending          int64                 `json:"pending,omitempty"`
 }
 
 type keyStore struct {
-	mu   sync.Mutex
-	path string
-	keys []clientKey
-	db   *stateDB
+	mu           sync.Mutex
+	path         string
+	keys         []clientKey
+	db           *stateDB
+	opusAccounts map[string]opusAccountState
 }
 
 func openKeyStore(path string) (*keyStore, error) {
 	if path == "" {
 		return nil, errors.New("state path is required")
 	}
-	s := &keyStore{path: path, keys: []clientKey{}}
+	s := &keyStore{path: path, keys: []clientKey{}, opusAccounts: map[string]opusAccountState{}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -80,18 +82,43 @@ func openKeyStore(path string) (*keyStore, error) {
 }
 
 func (s *keyStore) update(fn func([]clientKey) ([]clientKey, error)) error {
+	return s.updateWithOpus(func(keys []clientKey, _ map[string]opusAccountState) ([]clientKey, error) {
+		return fn(keys)
+	})
+}
+
+func cloneKeys(keys []clientKey) []clientKey {
+	next := append([]clientKey(nil), keys...)
+	for i := range next {
+		if next[i].OpusBuckets != nil {
+			buckets := make(map[string]opusBucket, len(next[i].OpusBuckets))
+			for accountID, bucket := range next[i].OpusBuckets {
+				buckets[accountID] = bucket
+			}
+			next[i].OpusBuckets = buckets
+		}
+	}
+	return next
+}
+
+func (s *keyStore) updateWithOpus(fn func([]clientKey, map[string]opusAccountState) ([]clientKey, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := append([]clientKey(nil), s.keys...)
-	next, err := fn(next)
+	next := cloneKeys(s.keys)
+	accounts := make(map[string]opusAccountState, len(s.opusAccounts))
+	for id, account := range s.opusAccounts {
+		accounts[id] = account
+	}
+	next, err := fn(next, accounts)
 	if err != nil {
 		return err
 	}
 	if s.db != nil {
-		if err := s.db.replaceKeys(next); err != nil {
+		if err := s.db.replaceKeysAndOpus(next, accounts); err != nil {
 			return err
 		}
 		s.keys = next
+		s.opusAccounts = accounts
 		return nil
 	}
 	data, err := json.Marshal(next)
@@ -127,13 +154,24 @@ func (s *keyStore) update(fn func([]clientKey) ([]clientKey, error)) error {
 		_ = dir.Close()
 	}
 	s.keys = next
+	s.opusAccounts = accounts
 	return nil
 }
 
 func (s *keyStore) snapshot() []clientKey {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]clientKey(nil), s.keys...)
+	return cloneKeys(s.keys)
+}
+
+func (s *keyStore) opusSnapshot() map[string]opusAccountState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]opusAccountState, len(s.opusAccounts))
+	for id, account := range s.opusAccounts {
+		next[id] = account
+	}
+	return next
 }
 
 func (s *keyStore) find(raw string) (clientKey, bool) {
@@ -227,6 +265,13 @@ func opusRemaining(k clientKey) int64 {
 		return 0
 	}
 	limit := opusEffectiveLimit(k)
+	if k.OpusLimitMode == "percent" && len(k.OpusBuckets) > 0 {
+		var available int64
+		for _, bucket := range k.OpusBuckets {
+			available += max(0, bucket.Balance/opusUnit)
+		}
+		return available
+	}
 	if limit == -1 {
 		return math.MaxInt64
 	}

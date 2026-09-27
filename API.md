@@ -97,9 +97,13 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `PUT /admin/keys/{id}` | 只修改提交的字段，例如 `{"allow_purchased_anlas":true,"purchased_anlas_limit":20}` |
 | `DELETE /admin/keys/{id}` | 撤销 key，释放未用分配额 |
 | `POST /admin/keys/{id}/rotate` | 轮换客户端密钥，旧 key 立即失效；保留 ID、权限、额度与用量，响应返回新 key |
-| `POST /admin/keys/{id}/reconcile` | `{"charged_anlas":N,"opus_charged_images":M}`，人工结算待核对预留额；Opus 字段可省略，默认保留原预留次数 |
+| `POST /admin/keys/{id}/reconcile` | `{"charged_anlas":N,"opus_charged_images":M}`，人工结算待核对预留额；可加 `opus_charged_by_account` 指定各账号实际扣费次数，管理页提供逐账号输入 |
 
-`allow_fixed_anlas`、`allow_purchased_anlas` 和 `allow_opus` 是独立开关，分别对应订阅点数、付费购入点数和 Opus 配额。对应的 `fixed_anlas_limit`、`purchased_anlas_limit` 和 `opus_limit_images` 是这把 key 的**累计上限**；提高上限即可追加可用额。三种上限均可设为 `-1`，表示不设本地累计上限，实际请求仍受预计官方余额和权限约束。Opus 可将 `opus_limit_mode` 设为 `percent` 并使用 `opus_limit_percent`（0–100），以估算满额 1730 次折算累计上限：10% 为 173 次，向下取整；`images` 模式使用 `opus_limit_images`。`opus_effective_limit_images` 返回当前生效的折算次数。请求消耗选中账号的官方 Opus 配额。关闭权限会立刻使该项剩余可用额变为 0，但不清除已用记录。只有 Opus 权限、没有 Anlas 权限的 key 可以使用符合免费条件且无付费附加项的生成请求；当官方会用 Opus 免费生成时，没有 Opus 权限的 key 会被拒绝，即使它有 Anlas 预算，因为代理无法要求 NovelAI 改扣点数。
+`allow_fixed_anlas`、`allow_purchased_anlas` 和 `allow_opus` 是独立开关。`fixed_anlas_limit`、`purchased_anlas_limit` 及 Opus 的 `images` 模式 `opus_limit_images` 是累计上限；`-1` 表示不设本地累计上限，实际请求仍受预计官方余额约束。Opus 的 `percent` 模式使用 `opus_limit_percent`（0–100）配置**独立、可回充的额度条**。`opus_effective_limit_images` 是满额容量，`opus_remaining_images` 是当前可用次数，`opus_used_images` 始终是累计用量。以满额约 1730 次估算，33% 的容量约为 570 次；若账号首次查询时只有 55% 可用，该 key 起始约为满额的 18.15%。每次生成只扣本 key 在选中账号下的余额；官方回充后按份额补入，最多到容量上限。关闭权限会立刻使剩余可用额变为 0，但不清除累计用量。
+
+固定账号 key 优先取得对应账号的配置份额；账号池 key 按各账号扣除固定份额后的余量计算比例，并在账号间保留独立子余额。新配置中同一账号的固定比例合计、账号池比例合计均不得超过 100%。旧账本若已有超额比例，会保留原配置并按比例归一化实际份额；管理接口返回 `opus_share_warning: true`，后续增加该范围总比例的修改会被拒绝。按次数或不限次数的 key 只能使用比例 key 未分配的官方 Opus 余额。若发现代理外消耗，先扣未分配余额，再同比降低相关 key 的余额。只有 Opus 权限、没有 Anlas 权限的 key 可以使用符合免费条件且无付费附加项的生成请求；当官方会用 Opus 免费生成时，没有 Opus 权限的 key 会被拒绝，即使它有 Anlas 预算，因为代理无法要求 NovelAI 改扣点数。
+
+官方 `usage.percent` 是已确认余额，`usage.timeUntilNextPercent` 是下一档 1% 的倒计时。代理至多预测下一档一次，并在下一次官方快照到达后确认或撤销预测；预测额可用于生成。字段缺失或无效时不预测。Tier 3 订阅无效且不在宽限期，或账号不是 Tier 3 时，管理接口及官方格式订阅响应中的可用 Opus 百分比显示为 0；官方可能仍返回非零的原始 `usage.percent`，账本会保留该快照供后续校正。仍使用现有官方额度缓存周期，不为预测另设轮询。管理及 `/quota` 响应增加 `opus_predicted`、`opus_confirmed_at` 和 `opus_pending_by_account`；旧百分比 key 升级后第一次成功查询官方额度才会初始化余额。管理员手动核对旧版遗留的、未记录账号归属的待核对量时，无法自动返还到某个账号的额度条。
 
 `allow_multi_image` 是逐 key 的单次多图权限。必须先打开全局同名配置才能为新 key 开启；旧账本及新 key 默认关闭。关闭全局配置时已有 key 的授权记录保留，但多图请求立即不可用。
 
@@ -116,7 +120,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/quota"
 curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 ```
 
-`GET /quota` 返回该 key 的账号策略、三组权限、累计上限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。无限本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定 key 使用所属账号的预计余额，池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
+`GET /quota` 返回该 key 的账号策略、三组权限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。比例模式的剩余量是逐账号可用次数的合计；无限累计模式的本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定 key 使用所属账号的预计余额，池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
 
 管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示；现有账本不提供按日历史曲线。
 

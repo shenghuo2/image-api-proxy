@@ -10,39 +10,43 @@ import (
 )
 
 type publicKey struct {
-	ID                 string  `json:"id"`
-	Name               string  `json:"name"`
-	AccountID          string  `json:"account_id"`
-	AccountName        string  `json:"account_name,omitempty"`
-	AllowFixed         bool    `json:"allow_fixed_anlas"`
-	FixedLimit         int64   `json:"fixed_anlas_limit"`
-	FixedSpent         int64   `json:"fixed_anlas_spent"`
-	FixedPending       int64   `json:"fixed_anlas_pending"`
-	FixedRemaining     int64   `json:"fixed_anlas_remaining"`
-	AllowPurchased     bool    `json:"allow_purchased_anlas"`
-	PurchasedLimit     int64   `json:"purchased_anlas_limit"`
-	PurchasedSpent     int64   `json:"purchased_anlas_spent"`
-	PurchasedPending   int64   `json:"purchased_anlas_pending"`
-	PurchasedRemaining int64   `json:"purchased_anlas_remaining"`
-	AllowOpus          bool    `json:"allow_opus"`
-	AllowMultiImage    bool    `json:"allow_multi_image"`
-	ArchiveEnabled     bool    `json:"archive_enabled"`
-	OpusLimitMode      string  `json:"opus_limit_mode"`
-	OpusLimitPercent   float64 `json:"opus_limit_percent"`
-	OpusLimit          int64   `json:"opus_limit_images"`
-	OpusEffectiveLimit int64   `json:"opus_effective_limit_images"`
-	OpusUsed           int64   `json:"opus_used_images"`
-	OpusPending        int64   `json:"opus_pending_images"`
-	OpusRemaining      int64   `json:"opus_remaining_images"`
-	QueueLimit         int     `json:"queue_limit"`
-	AllocatedAnlas     int64   `json:"allocated_anlas"`
-	SpentAnlas         int64   `json:"spent_anlas"`
-	PendingAnlas       int64   `json:"pending_anlas"`
-	RemainingAnlas     int64   `json:"remaining_anlas"`
-	QueueLength        int     `json:"queue_length"`
-	KeyQueueLength     int     `json:"key_queue_length"`
-	Revoked            bool    `json:"revoked"`
-	Key                string  `json:"key,omitempty"`
+	ID                   string           `json:"id"`
+	Name                 string           `json:"name"`
+	AccountID            string           `json:"account_id"`
+	AccountName          string           `json:"account_name,omitempty"`
+	AllowFixed           bool             `json:"allow_fixed_anlas"`
+	FixedLimit           int64            `json:"fixed_anlas_limit"`
+	FixedSpent           int64            `json:"fixed_anlas_spent"`
+	FixedPending         int64            `json:"fixed_anlas_pending"`
+	FixedRemaining       int64            `json:"fixed_anlas_remaining"`
+	AllowPurchased       bool             `json:"allow_purchased_anlas"`
+	PurchasedLimit       int64            `json:"purchased_anlas_limit"`
+	PurchasedSpent       int64            `json:"purchased_anlas_spent"`
+	PurchasedPending     int64            `json:"purchased_anlas_pending"`
+	PurchasedRemaining   int64            `json:"purchased_anlas_remaining"`
+	AllowOpus            bool             `json:"allow_opus"`
+	AllowMultiImage      bool             `json:"allow_multi_image"`
+	ArchiveEnabled       bool             `json:"archive_enabled"`
+	OpusLimitMode        string           `json:"opus_limit_mode"`
+	OpusLimitPercent     float64          `json:"opus_limit_percent"`
+	OpusLimit            int64            `json:"opus_limit_images"`
+	OpusEffectiveLimit   int64            `json:"opus_effective_limit_images"`
+	OpusUsed             int64            `json:"opus_used_images"`
+	OpusPending          int64            `json:"opus_pending_images"`
+	OpusRemaining        int64            `json:"opus_remaining_images"`
+	OpusPredicted        bool             `json:"opus_predicted"`
+	OpusConfirmedAt      *time.Time       `json:"opus_confirmed_at,omitempty"`
+	OpusPendingByAccount map[string]int64 `json:"opus_pending_by_account,omitempty"`
+	OpusShareWarning     bool             `json:"opus_share_warning"`
+	QueueLimit           int              `json:"queue_limit"`
+	AllocatedAnlas       int64            `json:"allocated_anlas"`
+	SpentAnlas           int64            `json:"spent_anlas"`
+	PendingAnlas         int64            `json:"pending_anlas"`
+	RemainingAnlas       int64            `json:"remaining_anlas"`
+	QueueLength          int              `json:"queue_length"`
+	KeyQueueLength       int              `json:"key_queue_length"`
+	Revoked              bool             `json:"revoked"`
+	Key                  string           `json:"key,omitempty"`
 }
 
 func viewKey(k clientKey) publicKey {
@@ -72,7 +76,7 @@ func opusMode(k clientKey) string {
 }
 
 func (h *ManagedHandler) viewAdminKey(k clientKey) publicKey {
-	view := viewKey(k)
+	view := h.viewKey(k)
 	if view.AccountID == poolAccountID {
 		view.AccountName = "账号池"
 	} else if account, ok := h.accounts.find(view.AccountID); ok {
@@ -81,6 +85,27 @@ func (h *ManagedHandler) viewAdminKey(k clientKey) publicKey {
 	if k.KeyCiphertext != "" {
 		if raw, err := h.vault.open(k.KeyCiphertext); err == nil && hexHash(raw) == k.Hash {
 			view.Key = raw
+		}
+	}
+	return view
+}
+
+func (h *ManagedHandler) viewKey(k clientKey) publicKey {
+	view := viewKey(k)
+	if opusMode(k) == "percent" {
+		var confirmed time.Time
+		view.OpusRemaining, view.OpusEffectiveLimit, view.OpusPredicted, confirmed = h.opusRemainingForKey(k)
+		if !confirmed.IsZero() {
+			view.OpusConfirmedAt = &confirmed
+		}
+		view.OpusShareWarning = opusConfiguredOvercommit(h.store.snapshot(), k)
+	}
+	for accountID, bucket := range k.OpusBuckets {
+		if bucket.Pending > 0 {
+			if view.OpusPendingByAccount == nil {
+				view.OpusPendingByAccount = map[string]int64{}
+			}
+			view.OpusPendingByAccount[accountID] = bucket.Pending
 		}
 	}
 	return view
@@ -187,14 +212,29 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		h.setPolicy(w, r, strings.TrimPrefix(r.URL.Path, "/admin/keys/"), input)
 	case strings.HasPrefix(r.URL.Path, "/admin/keys/") && strings.HasSuffix(r.URL.Path, "/reconcile") && r.Method == http.MethodPost:
 		var body struct {
-			Charged     *int64 `json:"charged_anlas"`
-			OpusCharged *int64 `json:"opus_charged_images"`
+			Charged              *int64           `json:"charged_anlas"`
+			OpusCharged          *int64           `json:"opus_charged_images"`
+			OpusChargedByAccount map[string]int64 `json:"opus_charged_by_account"`
 		}
 		if err := decodeAdminBody(r, &body); err != nil || body.Charged == nil || *body.Charged < 0 || *body.Charged > 1e9 || (body.OpusCharged != nil && (*body.OpusCharged < 0 || *body.OpusCharged > 1e7)) {
 			http.Error(w, "invalid reconciliation", http.StatusBadRequest)
 			return
 		}
-		h.reconcile(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/keys/"), "/reconcile"), *body.Charged, body.OpusCharged)
+		if body.OpusChargedByAccount != nil {
+			var total int64
+			for _, charged := range body.OpusChargedByAccount {
+				if charged < 0 || charged > 1e7 {
+					http.Error(w, "invalid account reconciliation", http.StatusBadRequest)
+					return
+				}
+				total += charged
+			}
+			if body.OpusCharged == nil || total > *body.OpusCharged {
+				http.Error(w, "invalid account reconciliation", http.StatusBadRequest)
+				return
+			}
+		}
+		h.reconcile(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/keys/"), "/reconcile"), *body.Charged, body.OpusCharged, body.OpusChargedByAccount)
 	case strings.HasPrefix(r.URL.Path, "/admin/keys/") && strings.HasSuffix(r.URL.Path, "/rotate") && r.Method == http.MethodPost:
 		h.rotateKey(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/admin/keys/"), "/rotate"))
 	case strings.HasPrefix(r.URL.Path, "/admin/keys/") && r.Method == http.MethodDelete:
@@ -308,7 +348,7 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		http.Error(w, "enable multi-image in settings first", http.StatusConflict)
 		return
 	}
-	key := clientKey{Name: input.Name, AccountID: poolAccountID, PolicyVersion: 1}
+	key := clientKey{Name: input.Name, AccountID: poolAccountID, PolicyVersion: 2}
 	if input.AccountID != nil {
 		key.AccountID = *input.AccountID
 	}
@@ -355,21 +395,26 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 		http.Error(w, "key generation failed", http.StatusInternalServerError)
 		return
 	}
-	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		if key.AllowMultiImage && !h.settings.snapshot().AllowMultiImage {
 			return nil, errors.New("enable multi-image in settings first")
 		}
+		before := cloneKeys(keys)
 		keys = append(keys, key)
+		if err := validateOpusShares(before, keys, h.accounts.snapshot()); err != nil {
+			return nil, err
+		}
 		if err := validateAccountAllocations(keys, quotas); err != nil {
 			return nil, err
 		}
+		rebalanceOpusBuckets(keys, states, h.accounts.snapshot())
 		return keys, nil
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	jsonReply(w, http.StatusCreated, map[string]any{"key": raw, "client": viewKey(key)})
+	jsonReply(w, http.StatusCreated, map[string]any{"key": raw, "client": h.viewKey(key)})
 }
 
 func (h *ManagedHandler) rotateKey(w http.ResponseWriter, r *http.Request, id string) {
@@ -409,7 +454,7 @@ func (h *ManagedHandler) rotateKey(w http.ResponseWriter, r *http.Request, id st
 		http.Error(w, "key not found", http.StatusNotFound)
 		return
 	}
-	jsonReply(w, http.StatusOK, map[string]any{"key": raw, "client": viewKey(updated)})
+	jsonReply(w, http.StatusOK, map[string]any{"key": raw, "client": h.viewKey(updated)})
 }
 
 func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id string, input keyPolicyInput) {
@@ -425,7 +470,8 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	var updated clientKey
-	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
+		before := cloneKeys(keys)
 		for i := range keys {
 			if keys[i].ID == id && !keys[i].Revoked {
 				if input.AccountID != nil && *input.AccountID != keyAccountID(keys[i]) {
@@ -438,8 +484,22 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 					keys[i].AccountID = *input.AccountID
 				}
 				wasAllowed := keys[i].AllowMultiImage
+				wasOpusAllowed := keys[i].AllowOpus
+				wasOpusMode := opusMode(keys[i])
 				if err := applyPolicy(&keys[i], input); err != nil {
 					return nil, err
+				}
+				if !keys[i].AllowOpus || (wasOpusMode == "percent" && opusMode(keys[i]) != "percent") {
+					for accountID, bucket := range keys[i].OpusBuckets {
+						bucket.Balance = 0
+						keys[i].OpusBuckets[accountID] = bucket
+					}
+				}
+				if (!wasOpusAllowed && keys[i].AllowOpus) || wasOpusMode != opusMode(keys[i]) {
+					keys[i].PolicyVersion = 2
+					if opusMode(keys[i]) == "percent" {
+						keys[i].OpusBuckets = nil
+					}
 				}
 				if keyAccountID(keys[i]) != poolAccountID && quotas[keyAccountID(keys[i])] == nil {
 					return nil, errors.New("upstream account quota unavailable")
@@ -456,6 +516,11 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 				if err := validateAccountAllocations(keys, quotas); err != nil {
 					return nil, err
 				}
+				if err := validateOpusShares(before, keys, h.accounts.snapshot()); err != nil {
+					return nil, err
+				}
+				rebalanceOpusBuckets(keys, states, h.accounts.snapshot())
+				topUpIncreasedOpusShare(before, keys, states, h.accounts.snapshot(), id)
 				updated = keys[i]
 				return keys, nil
 			}
@@ -466,10 +531,10 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	jsonReply(w, http.StatusOK, viewKey(updated))
+	jsonReply(w, http.StatusOK, h.viewKey(updated))
 }
 
-func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id string, charged int64, opusCharged *int64) {
+func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id string, charged int64, opusCharged *int64, opusByAccount map[string]int64) {
 	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
@@ -477,7 +542,7 @@ func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id st
 	}
 	defer release()
 	var updated clientKey
-	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		for i := range keys {
 			k := &keys[i]
 			if k.ID != id || k.FixedPending+k.PurchasedPending+k.OpusPending == 0 {
@@ -496,6 +561,38 @@ func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id st
 			if opusCharged != nil {
 				opus = *opusCharged
 			}
+			if opusByAccount != nil {
+				for accountID, amount := range opusByAccount {
+					if amount > k.OpusBuckets[accountID].Pending {
+						return nil, errors.New("account Opus charge exceeds pending reservation")
+					}
+				}
+			}
+			unknownPending := k.OpusPending - opusPendingByAccount(*k)
+			remainingCharge := opus
+			for _, accountID := range sortedBucketIDs(*k) {
+				bucket := k.OpusBuckets[accountID]
+				confirmed := min(bucket.Pending, remainingCharge)
+				if opusByAccount != nil {
+					confirmed = opusByAccount[accountID]
+				}
+				refunded := bucket.Pending - confirmed
+				remainingCharge -= confirmed
+				bucket.Pending = 0
+				if refunded > 0 {
+					if opusMode(*k) == "percent" {
+						bucket.Balance = min(opusCapacity(keys, *k, accountID), bucket.Balance+refunded*opusUnit)
+					}
+					if state, ok := states[accountID]; ok {
+						state.Projected = min(opusFullUnits, state.Projected+refunded*opusUnit)
+						states[accountID] = state
+					}
+				}
+				k.OpusBuckets[accountID] = bucket
+			}
+			if opusByAccount != nil && remainingCharge > unknownPending {
+				return nil, errors.New("unassigned Opus charge exceeds pending reservation")
+			}
 			k.OpusUsed = max(0, k.OpusUsed+opus-k.OpusPending)
 			k.OpusPending = 0
 			updated = *k
@@ -511,5 +608,5 @@ func (h *ManagedHandler) reconcile(w http.ResponseWriter, r *http.Request, id st
 	// Re-fetch after manual reconciliation instead of applying its delta twice.
 	h.quotas = make(map[string]*quotaSnapshot)
 	h.lastQuotaAttempt = make(map[string]time.Time)
-	jsonReply(w, http.StatusOK, viewKey(updated))
+	jsonReply(w, http.StatusOK, h.viewKey(updated))
 }

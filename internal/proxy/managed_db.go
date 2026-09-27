@@ -15,7 +15,7 @@ import (
 
 type stateDB struct{ db *sql.DB }
 
-const stateSchemaVersion = 2
+const stateSchemaVersion = 3
 
 var stateTables = []string{
 	"CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -26,6 +26,7 @@ var stateTables = []string{
 	"CREATE TABLE archive_work (id TEXT PRIMARY KEY, data BLOB NOT NULL, created_at INTEGER NOT NULL)",
 	"CREATE TABLE images (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL, bytes INTEGER NOT NULL, original TEXT NOT NULL, thumbnail TEXT NOT NULL)",
 	"CREATE TABLE usage_quarters (quarter_start INTEGER PRIMARY KEY, generations INTEGER NOT NULL, images INTEGER NOT NULL)",
+	"CREATE TABLE opus_accounts (account_id TEXT PRIMARY KEY, data BLOB NOT NULL)",
 }
 
 var stateIndexes = []string{
@@ -96,6 +97,31 @@ func checkStateSchema(db *sql.DB, version int) error {
 			if !columns[name] {
 				return fmt.Errorf("incomplete SQLite schema: usage_quarters.%s is missing", name)
 			}
+		}
+	}
+	if version >= 3 {
+		rows, err := db.Query("PRAGMA table_info(opus_accounts)")
+		if err != nil {
+			return err
+		}
+		columns := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, primary int
+			var name, kind string
+			var fallback sql.NullString
+			if err := rows.Scan(&cid, &name, &kind, &notNull, &fallback, &primary); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return err
+		}
+		if !columns["account_id"] || !columns["data"] {
+			return errors.New("incomplete SQLite schema: opus_accounts")
 		}
 	}
 	return nil
@@ -225,6 +251,9 @@ func openStateDB(path string, keys *keyStore, accounts *accountStore, settings *
 				}
 			}
 			if _, err := tx.Exec("CREATE TABLE IF NOT EXISTS usage_quarters (quarter_start INTEGER PRIMARY KEY, generations INTEGER NOT NULL, images INTEGER NOT NULL)"); err != nil {
+				return rollback(err)
+			}
+			if _, err := tx.Exec("CREATE TABLE IF NOT EXISTS opus_accounts (account_id TEXT PRIMARY KEY, data BLOB NOT NULL)"); err != nil {
 				return rollback(err)
 			}
 			if _, err := tx.Exec("INSERT INTO meta(name,value) SELECT 'archive_ever','1' WHERE EXISTS(SELECT 1 FROM images LIMIT 1) ON CONFLICT(name) DO NOTHING"); err != nil {
@@ -360,7 +389,7 @@ func putJSON(tx *sql.Tx, table, id string, value any) error {
 	return err
 }
 
-func (s *stateDB) replaceKeys(keys []clientKey) error {
+func (s *stateDB) replaceKeysAndOpus(keys []clientKey, accounts map[string]opusAccountState) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -371,6 +400,18 @@ func (s *stateDB) replaceKeys(keys []clientKey) error {
 	}
 	for _, k := range keys {
 		if err := putJSON(tx, "keys", k.ID, k); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM opus_accounts"); err != nil {
+		return err
+	}
+	for id, account := range accounts {
+		data, err := json.Marshal(account)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec("INSERT INTO opus_accounts(account_id,data) VALUES(?,?)", id, data); err != nil {
 			return err
 		}
 	}
@@ -439,6 +480,7 @@ func (s *stateDB) load(keys *keyStore, accounts *accountStore, settings *setting
 		return rows.Err()
 	}
 	keys.keys = []clientKey{}
+	keys.opusAccounts = map[string]opusAccountState{}
 	if err := load("keys", func(data []byte) error {
 		var k clientKey
 		if err := json.Unmarshal(data, &k); err != nil {
@@ -447,6 +489,29 @@ func (s *stateDB) load(keys *keyStore, accounts *accountStore, settings *setting
 		keys.keys = append(keys.keys, k)
 		return nil
 	}); err != nil {
+		return err
+	}
+	rows, err := s.db.Query("SELECT account_id,data FROM opus_accounts")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var account opusAccountState
+		if err := json.Unmarshal(data, &account); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode opus account: %w", err)
+		}
+		keys.opusAccounts[id] = account
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
 		return err
 	}
 	accounts.accounts = []upstreamAccount{}

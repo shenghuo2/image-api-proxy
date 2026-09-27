@@ -269,15 +269,16 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type upstreamQuota struct {
-	Fixed        int64
-	Purchased    int64
-	Tier         int
-	Active       bool
-	Grace        bool
-	Usage        json.RawMessage
-	OpusPercent  float64
-	OpusKnown    bool
-	OpusNegative bool
+	Fixed              int64
+	Purchased          int64
+	Tier               int
+	Active             bool
+	Grace              bool
+	Usage              json.RawMessage
+	OpusPercent        float64
+	OpusKnown          bool
+	OpusNegative       bool
+	NextPercentSeconds int64
 }
 
 type quotaSnapshot struct {
@@ -285,10 +286,19 @@ type quotaSnapshot struct {
 	Fixed                int64
 	Purchased            int64
 	OpusJobsSinceRefresh int64
+	OpusProjected        *float64
+	OpusPredicted        bool
+	OpusNextPercentAt    time.Time
 	Refreshed            time.Time
 }
 
 func (q *quotaSnapshot) projectedOpusPercent() float64 {
+	if q.Official.Tier != 3 || (!q.Official.Active && !q.Official.Grace) {
+		return 0
+	}
+	if q.OpusProjected != nil {
+		return *q.OpusProjected
+	}
 	return math.Max(0, q.Official.OpusPercent-float64(q.OpusJobsSinceRefresh)*100/opusFullImages)
 }
 
@@ -300,6 +310,14 @@ func (h *ManagedHandler) currentQuota(ctx context.Context, accountID string, for
 	}
 	now := time.Now()
 	if q := h.quotas[accountID]; q != nil && now.Sub(q.Refreshed) < h.quotaTTL && !force {
+		if state, err := h.predictOpusAccount(accountID, now); err != nil {
+			return nil, err
+		} else if state != nil {
+			projected := float64(state.Projected) * 100 / float64(opusFullUnits)
+			q.OpusProjected = &projected
+			q.OpusPredicted = state.Predicted
+			q.OpusNextPercentAt = state.NextPercentAt
+		}
 		return q, nil
 	}
 	refreshFloor := min(30*time.Second, h.quotaTTL)
@@ -315,7 +333,18 @@ func (h *ManagedHandler) currentQuota(ctx context.Context, accountID string, for
 		slog.Warn("upstream quota refresh failed", "error", err)
 		return nil, err
 	}
-	h.quotas[accountID] = &quotaSnapshot{Official: quota, Fixed: quota.Fixed, Purchased: quota.Purchased, Refreshed: time.Now()}
+	refreshed := time.Now()
+	state, err := h.syncOpusAccount(accountID, token, quota, refreshed)
+	if err != nil {
+		return nil, err
+	}
+	h.quotas[accountID] = &quotaSnapshot{Official: quota, Fixed: quota.Fixed, Purchased: quota.Purchased, Refreshed: refreshed}
+	if state != nil {
+		projected := float64(state.Projected) * 100 / float64(opusFullUnits)
+		h.quotas[accountID].OpusProjected = &projected
+		h.quotas[accountID].OpusPredicted = state.Predicted
+		h.quotas[accountID].OpusNextPercentAt = state.NextPercentAt
+	}
 	return h.quotas[accountID], nil
 }
 
@@ -370,6 +399,10 @@ func (h *ManagedHandler) quotaForKey(ctx context.Context, k clientKey) (*quotaSn
 			if len(combined.Official.Usage) == 0 {
 				combined.Official.Usage = q.Official.Usage
 			}
+			if !q.OpusNextPercentAt.IsZero() && (combined.OpusNextPercentAt.IsZero() || q.OpusNextPercentAt.Before(combined.OpusNextPercentAt)) {
+				combined.OpusNextPercentAt = q.OpusNextPercentAt
+			}
+			combined.OpusPredicted = combined.OpusPredicted || q.OpusPredicted
 		}
 		if combined.Refreshed.IsZero() || q.Refreshed.Before(combined.Refreshed) {
 			combined.Refreshed = q.Refreshed
@@ -417,13 +450,17 @@ func (h *ManagedHandler) fetchQuota(ctx context.Context, token string) (upstream
 	quota := upstreamQuota{Fixed: *data.Steps.Fixed, Purchased: *data.Steps.Purchased,
 		Tier: data.Tier, Active: data.Active, Grace: data.Grace, Usage: data.Usage}
 	var usage struct {
-		Percent  *float64 `json:"percent"`
-		Negative bool     `json:"isNegative"`
+		Percent     *float64 `json:"percent"`
+		Negative    bool     `json:"isNegative"`
+		NextPercent *float64 `json:"timeUntilNextPercent"`
 	}
-	if len(data.Usage) > 0 && json.Unmarshal(data.Usage, &usage) == nil && usage.Percent != nil && !math.IsNaN(*usage.Percent) {
+	if len(data.Usage) > 0 && json.Unmarshal(data.Usage, &usage) == nil && usage.Percent != nil && !math.IsNaN(*usage.Percent) && !math.IsInf(*usage.Percent, 0) && *usage.Percent >= 0 && *usage.Percent <= 100 {
 		quota.OpusPercent = *usage.Percent
 		quota.OpusKnown = true
 		quota.OpusNegative = usage.Negative
+		if usage.NextPercent != nil && !math.IsNaN(*usage.NextPercent) && !math.IsInf(*usage.NextPercent, 0) && *usage.NextPercent > 0 && *usage.NextPercent <= 7*24*3600 {
+			quota.NextPercentSeconds = int64(math.Ceil(*usage.NextPercent))
+		}
 	}
 	return quota, nil
 }
@@ -443,7 +480,7 @@ func (h *ManagedHandler) serveClientQuota(w http.ResponseWriter, r *http.Request
 	}
 	for _, latest := range h.store.snapshot() {
 		if latest.ID == key.ID && latest.Hash == current.Hash && !latest.Revoked {
-			view := viewKey(latest)
+			view := h.viewKey(latest)
 			view.QueueLength = h.queueLength()
 			view.KeyQueueLength = h.keyQueueLength(key.ID)
 			jsonReply(w, http.StatusOK, view)
@@ -480,7 +517,7 @@ func (h *ManagedHandler) serveSubscription(w http.ResponseWriter, r *http.Reques
 					"fixedTrainingStepsLeft": min(fixedRemaining(latest), q.Fixed),
 					"purchasedTrainingSteps": min(purchasedRemaining(latest), q.Purchased),
 				},
-				"usage": projectedUsage(q, opusRemaining(latest)),
+				"usage": projectedUsage(q, h.opusRemainingForSubscription(latest)),
 			})
 			return
 		}
@@ -575,10 +612,28 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 			quotaErr = err
 			continue
 		}
+		for _, latest := range h.store.snapshot() {
+			if latest.ID == current.ID {
+				current = latest
+				break
+			}
+		}
 		candidateHold, err := chooseReservation(current, cost, candidate)
 		if err != nil {
 			reservationErr = err
 			continue
+		}
+		if candidateHold.Opus > 0 {
+			states := h.store.opusSnapshot()
+			state, known := states[account.ID]
+			if opusMode(current) == "percent" && (!candidate.Official.OpusKnown || !known || h.opusAvailable(current, account.ID) < candidateHold.Opus) {
+				reservationErr = errors.New("Opus quota unavailable for key on account")
+				continue
+			}
+			if known && opusMode(current) == "images" && state.Projected-opusAllocated(h.store.snapshot(), account.ID) < candidateHold.Opus*opusUnit {
+				reservationErr = errors.New("unallocated Opus quota unavailable")
+				continue
+			}
 		}
 		selectedAccount, q, hold = account, candidate, candidateHold
 		if keyAccountID(current) == poolAccountID {
@@ -599,9 +654,38 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		http.Error(w, "upstream account unavailable", http.StatusBadGateway)
 		return
 	}
-	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+	var projectedOpus *float64
+	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		for i := range keys {
 			if keys[i].ID == key.ID && keys[i].Hash == currentKey.Hash && !keys[i].Revoked && (!cost.MultiImage || (h.settings.snapshot().AllowMultiImage && keys[i].AllowMultiImage)) && fixedRemaining(keys[i]) >= hold.Fixed && purchasedRemaining(keys[i]) >= hold.Purchased && opusRemaining(keys[i]) >= hold.Opus {
+				if hold.Opus > 0 {
+					state, known := states[selectedAccount.ID]
+					if opusMode(keys[i]) == "percent" {
+						bucket := bucketFor(&keys[i], selectedAccount.ID)
+						if !known || !bucket.Seeded || bucket.Balance < hold.Opus*opusUnit {
+							return nil, errors.New("Opus quota unavailable for key on account")
+						}
+						bucket.Balance -= hold.Opus * opusUnit
+						bucket.Pending += hold.Opus
+						keys[i].OpusBuckets[selectedAccount.ID] = bucket
+					} else if known {
+						if state.Projected-opusAllocated(keys, selectedAccount.ID) < hold.Opus*opusUnit {
+							return nil, errors.New("unallocated Opus quota unavailable")
+						}
+						bucket := bucketFor(&keys[i], selectedAccount.ID)
+						bucket.Pending += hold.Opus
+						keys[i].OpusBuckets[selectedAccount.ID] = bucket
+					}
+					if known {
+						if state.Projected < hold.Opus*opusUnit {
+							return nil, errors.New("upstream Opus quota unavailable")
+						}
+						state.Projected -= hold.Opus * opusUnit
+						states[selectedAccount.ID] = state
+						value := float64(state.Projected) * 100 / float64(opusFullUnits)
+						projectedOpus = &value
+					}
+				}
 				keys[i].FixedSpent += hold.Fixed
 				keys[i].FixedPending += hold.Fixed
 				keys[i].PurchasedSpent += hold.Purchased
@@ -619,7 +703,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	}
 	q.Fixed -= hold.Fixed
 	q.Purchased -= hold.Purchased
-	if cost.V5 {
+	if projectedOpus != nil {
+		q.OpusProjected = projectedOpus
+	} else if cost.V5 {
 		q.OpusJobsSinceRefresh += hold.Opus
 	}
 	upstreamRequest := r.Clone(r.Context())
@@ -661,9 +747,28 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		return // The upstream outcome is uncertain; keep the reservation pending.
 	}
 	refund := tracked.status >= 400
-	err = h.store.update(func(keys []clientKey) ([]clientKey, error) {
+	projectedOpus = nil
+	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		for i := range keys {
 			if keys[i].ID == key.ID {
+				if hold.Opus > 0 {
+					bucket, ok := keys[i].OpusBuckets[selectedAccount.ID]
+					if ok {
+						bucket.Pending = max(0, bucket.Pending-hold.Opus)
+						if refund && opusMode(keys[i]) == "percent" {
+							bucket.Balance = min(opusCapacity(keys, keys[i], selectedAccount.ID), bucket.Balance+hold.Opus*opusUnit)
+						}
+						keys[i].OpusBuckets[selectedAccount.ID] = bucket
+					}
+					if refund {
+						if state, ok := states[selectedAccount.ID]; ok {
+							state.Projected = min(opusFullUnits, state.Projected+hold.Opus*opusUnit)
+							states[selectedAccount.ID] = state
+							value := float64(state.Projected) * 100 / float64(opusFullUnits)
+							projectedOpus = &value
+						}
+					}
+				}
 				keys[i].FixedPending -= hold.Fixed
 				keys[i].PurchasedPending -= hold.Purchased
 				keys[i].OpusPending -= hold.Opus
@@ -680,7 +785,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	if err == nil && refund {
 		q.Fixed += hold.Fixed
 		q.Purchased += hold.Purchased
-		if cost.V5 {
+		if projectedOpus != nil {
+			q.OpusProjected = projectedOpus
+		} else if cost.V5 {
 			q.OpusJobsSinceRefresh -= hold.Opus
 		}
 	}
@@ -707,6 +814,13 @@ func projectedUsage(q *quotaSnapshot, opusImages int64) json.RawMessage {
 	usage["percent"] = percent
 	if value == 0 {
 		usage["isNegative"] = json.RawMessage("true")
+	}
+	if q.OpusPredicted {
+		delete(usage, "timeUntilNextPercent")
+	} else if !q.OpusNextPercentAt.IsZero() {
+		remaining := max(0, int64(math.Ceil(time.Until(q.OpusNextPercentAt).Seconds())))
+		countdown, _ := json.Marshal(remaining)
+		usage["timeUntilNextPercent"] = countdown
 	}
 	data, err := json.Marshal(usage)
 	if err != nil {
