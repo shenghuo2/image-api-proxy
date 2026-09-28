@@ -1,36 +1,52 @@
-# NovelAI API Proxy — Cloudflare Workers
+# NovelAI API Proxy
 
-独立 Serverless 版本，使用 TypeScript Worker、SQLite Durable Object 和 Workers Static Assets。无需服务器、R2 或 D1。按每天约 1000 次生成、平均结果约 2 MiB 的测试负载，Cloudflare Free 计划的请求、SQL 读写与存储额度够用；单 DO 全天活跃的时长预算也在免费额度内。真实请求 CPU、isolate 内存及上游吞吐仍需验证，详细测算见下表。NovelAI 订阅和生成费用另计。
+为 NovelAI 图片生成提供统一入口：管理多个账号，为不同调用方分配独立密钥和额度，按队列依次生成图片。
 
-支持管理面板、多账号、客户端 key、Anlas/Opus 配额、全局 FIFO、同步/流式生成及持久化任务。没有图库和归档，任务结果完成后保留 **30 分钟**。
+> 多账号 · 客户端密钥 · Anlas / Opus 配额 · 全局 FIFO · 同步 / 流式生成 · 持久化任务
+
+## 功能
+
+- **账号管理**：多个 NovelAI 账号轮询，也可将客户端固定到指定账号。
+- **独立密钥**：按调用方分配权限、额度和排队上限，支持撤销及轮换。
+- **配额管理**：订阅 Anlas、购入 Anlas、Opus 次数及按比例回充，支持异常扣费人工核对。
+- **生成接口**：兼容官方图片请求格式，支持同步、流式和可查询的持久化任务。
+- **管理面板**：查看账号、配额、任务队列和生成用量。
 
 ## 选择版本
 
-| 版本 | 分支 | 部署与功能 |
+**推荐在自己的 VPS 上部署 Docker 版**，尤其适合重视出口 IP 质量、稳定性和可控性的用户。可以自行选择信誉较好的 VPS 出口 IP；IP 是否“纯净”取决于服务商与历史使用情况，并不是自建就一定更安全。Cloudflare 版使用平台出口，无法自行指定独享出口 IP。
+
+| 对比 | Docker 版（推荐） | Cloudflare Workers 版 |
 | --- | --- | --- |
-| [Go / Docker](https://github.com/shenghuo2/image-api-proxy/tree/main) | `main`（默认） | Docker Compose，支持图库和长期归档 |
-| [Cloudflare Workers](https://github.com/shenghuo2/image-api-proxy/tree/feat/cloudflare-workers) | `feat/cloudflare-workers` | 无需服务器，SQLite DO，任务结果保留 30 分钟，无图库 |
+| 部署环境 | 自己的 VPS / 服务器 | Cloudflare，无需维护服务器 |
+| 出口 IP | 由自己的服务器出口决定 | 平台出口，不提供固定独享 IP 选择 |
+| 图片图库与归档 | 支持，可配置保留时间与容量 | 不提供 |
+| 持久化任务结果 | 完成后保留 24 小时，归档另计 | 完成后保留 30 分钟 |
+| 数据存储 | 本机持久化卷 | SQLite Durable Object |
+| 成本 | VPS 费用 | 按下述负载，Free 请求、SQL 与存储额度够用 |
+| 适合谁 | 长期使用、需要图库、希望自主控制出口 | 轻量使用、无需图库、希望快速部署 |
+| 源码分支 | `main` | `feat/cloudflare-workers` |
 
-Cloudflare 一键部署（始终使用 `feat/cloudflare-workers` 分支）：
+两个版本独立维护，运行数据不自动互迁。NovelAI 订阅和生成费用均另计。
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fshenghuo2%2Fimage-api-proxy%2Ftree%2Ffeat%2Fcloudflare-workers)
+## 部署
 
-两个版本独立维护，运行数据不自动互迁。Docker 主分支继续维护，分叉前代码保留在 Git 历史中（基线 `6e799b4`）。
+### Docker / VPS（推荐）
 
-## 文档
+按 [Docker 部署教程](https://github.com/shenghuo2/image-api-proxy/blob/main/docs/USAGE.md) 使用 Docker Compose 启动，配置管理员密钥及 HTTPS，数据保存在持久化卷中。
 
-| 文档 | 面向读者 | 内容 |
-| --- | --- | --- |
-| [部署与使用](docs/USAGE.md) | 部署者、管理员、调用方 | 一键部署、首次配置、日常使用、限制和故障处理 |
-| [开发与维护](docs/DEVELOPMENT.md) | 开发者 | 架构、本地环境、测试、构建和发布 |
-| [API 参考](API.md) / [接入指南](INTEGRATION.md) | API 使用者 | 请求协议与第三方接入；Worker 差异以使用指南为准 |
-| [验证记录](worker/VALIDATION.md) | 维护者 | 功能、负载和线上验证结果 |
+### Cloudflare Workers
 
-## 一键部署
+按 [Cloudflare 部署教程](docs/USAGE.md) 使用一键部署按钮。教程包含表单填写、管理员密钥、首次登录和更新步骤；按钮只放在教程中。
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fshenghuo2%2Fimage-api-proxy%2Ftree%2Ffeat%2Fcloudflare-workers)
+以每天约 1000 次生成、平均结果约 2 MiB 的模拟负载测算，Free 计划的请求、SQL 读写和存储额度够用，单 DO 全天活跃的时长预算也在额度内。实际 CPU、isolate 内存和上游吞吐仍需线上验证。
 
-按钮固定使用公开仓库的 `feat/cloudflare-workers` 分支和完整仓库根目录。Cloudflare 构建命令为 `npm run build`，部署命令为 `npm run deploy`，按提示填写随机管理员 Secret `PROXY_ADMIN_KEY`。部署后打开自己的 `/console/`，添加 NovelAI Token 并创建客户端 key。详见 [部署步骤](docs/USAGE.md#一键部署到-cloudflare)。
+## 使用与开发
+
+- [使用指南](docs/USAGE.md)：部署、添加账号、创建客户端 key 和常见问题。
+- [API 参考](API.md) / [接入指南](INTEGRATION.md)：请求格式和已有项目接入。
+- [开发指南](docs/DEVELOPMENT.md)：架构、本地开发、测试和发布。
+- [验证记录](worker/VALIDATION.md)：功能测试、负载测算与线上检查。
 
 ## 当前使用量与 Free 额度对比
 
@@ -49,7 +65,9 @@ Cloudflare 一键部署（始终使用 `feat/cloudflare-workers` 分支）：
 | 单 isolate 内存 | 未取得 | 无可靠的 isolate 峰值测量 | 128 MB | 待测 |
 | Worker 启动时间 | 部署报告 1 ms | 不随每日生成次数直接累加 | 1,000 ms/次启动 | 当前值 0.10% |
 
-**读表注意：**
+<details>
+<summary>统计口径与验证边界</summary>
+
 
 - 当前 OAuth 凭据查询 Cloudflare Analytics 返回 401，查询订阅返回 403，因此没有取得线上全天计量，也没有确认该账号实际订阅是否为 Free。表中未知值不代表零；部署未升级套餐或绑定付款方式。
 - `/admin/runtime` 的读写计数保存在 DO 实例内存中，实例重新加载后会重置；当前写入为 0 不代表今天没有写入。SQL 测试计数包含索引维护和删除，alarm 存储操作按每次一行保守计入。
@@ -61,6 +79,4 @@ Cloudflare 一键部署（始终使用 `feat/cloudflare-workers` 分支）：
 
 额度来源（2026-09-28 核对）：[Workers 限制](https://developers.cloudflare.com/workers/platform/limits/)、[Durable Objects 定价与免费额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)。完整测试口径见 [验证记录](worker/VALIDATION.md)。
 
-## 原 Go 版本
-
-Go 源码保留作行为参考，原部署说明见 [README.go.md](README.go.md)。此分支的管理面板针对 Worker 版，不含 Go 版图库。
+</details>

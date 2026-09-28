@@ -2,10 +2,10 @@ name: Worker checks
 on:
   push:
     branches: [feat/cloudflare-workers]
-    paths: ['worker/**', 'frontend/**', 'package.json', 'package-lock.json', 'wrangler.jsonc', '.dev.vars.example', '.github/workflows/worker.yml']
+    paths: ['worker/**', 'frontend/**', 'scripts/**', '.env.example', 'package.json', 'package-lock.json', 'wrangler.jsonc', '.dev.vars.example', '.github/workflows/worker.yml']
   pull_request:
     branches: [feat/cloudflare-workers]
-    paths: ['worker/**', 'frontend/**', 'package.json', 'package-lock.json', 'wrangler.jsonc', '.dev.vars.example', '.github/workflows/worker.yml']
+    paths: ['worker/**', 'frontend/**', 'scripts/**', '.env.example', 'package.json', 'package-lock.json', 'wrangler.jsonc', '.dev.vars.example', '.github/workflows/worker.yml']
 jobs:
   worker:
     runs-on: ubuntu-latest

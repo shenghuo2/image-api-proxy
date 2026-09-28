@@ -4,27 +4,53 @@
 
 ## 一键部署到 Cloudflare
 
-1. 从 [README](../README.md) 点击 **Deploy to Cloudflare**，登录 Cloudflare 并授权 GitHub/GitLab 复制公开仓库。
-2. 选择 Workers Free 账号，设置仓库名和 Worker 名称。按钮源码固定为 `feat/cloudflare-workers` 分支，使用完整仓库根目录，不要选择 `worker/` 子目录，因为前端位于同级目录。
-3. 填写 Secret `PROXY_ADMIN_KEY`：生成并保存至少 32 字符的随机密钥，例如在本机执行 `openssl rand -hex 32`。不要使用示例文件的占位值；这不是 NovelAI Token。
-4. 确认构建命令为 `npm run build`，部署命令为 `npm run deploy`。根目录构建脚本安装前端和 Worker 依赖并构建页面；Cloudflare 自动创建 SQLite Durable Object 和静态资源，无需手建 D1/R2。
-5. 部署完成后打开输出的 `https://<worker>.<账号子域>.workers.dev/console/`，用管理员密钥登录。
+准备一个 Cloudflare 账号、GitHub/GitLab 账号和有效的 NovelAI 订阅。管理员登录密钥与 NovelAI Token 是两回事：**部署时只填管理员密钥，NovelAI Token 在部署完成后通过管理面板添加。**
 
-按钮要求源码已发布至公开 GitHub/GitLab 仓库；本地未推送的分支无法通过按钮部署。按钮对应的是创建自己的实例，现有实例更新请见下文。
+### 1. 创建自己的实例
 
-## 命令行部署
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fshenghuo2%2Fimage-api-proxy%2Ftree%2Ffeat%2Fcloudflare-workers)
 
-需要 Node.js 22.12+ 和 npm，建议 Node.js 24。以下命令从仓库根目录执行：
+点击按钮后登录并授权复制仓库。源码固定来自 `feat/cloudflare-workers` 分支的完整工程，无需自己切换分支，也无需创建数据库。
+
+### 2. 填写部署表单
+
+| 页面项目 | 如何填写 |
+| --- | --- |
+| 仓库名 / Worker 名称 | 默认即可，也可以改成自己喜欢的名称 |
+| 构建命令 | 保持 `npm run build` |
+| 部署命令 | 保持 `npm run deploy` |
+| `PROXY_ADMIN_KEY` | **必填：粘贴你自己生成并保存的随机管理员密钥，至少 32 字符** |
+| 其他变量和绑定 | 保持默认，SQLite DO 和静态资源自动创建 |
+
+**`PROXY_ADMIN_KEY` 是密码输入框，输入内容显示为圆点。圆点不代表系统已生成可用密码。** 模板现在留空，不再预填 `replace-…` 示例字符串。如果旧页面仍显示圆点，请全选并替换，再保存你填入的真实密钥；管理面板登录时要使用同一个值。
+
+建议直接用密码管理器生成并保存至少 32 字符的随机密码，再粘贴到这个输入框。若已克隆源码，也可运行 `npm run secret:init` 自动生成 64 位十六进制密钥，打开根目录 `.dev.vars`，复制 `PROXY_ADMIN_KEY=` 右侧的值到表单。
+
+Cloudflare 官方按钮没有文档化的随机 Secret 生成配置，无法由仓库控制该密码框的显示或增加生成按钮。这里采用空字段和明确提示；管理员密钥也用于账号 Token 加密，**不会写入构建日志或运行日志**。本地自动生成命令只输出文件位置，不输出密钥。
+
+### 3. 部署并登录
+
+点击部署，等待构建完成。复制 Cloudflare 给出的 `https://<worker>.<账号子域>.workers.dev` 地址，在后面加 `/console/` 打开管理面板，用第 2 步保存的管理员密钥登录。
+
+部署过程无需绑定 R2、创建 D1 或配置自有域名。若失败，查看 Build 日志中的错误；日志不会提供管理员密钥。密钥遗失后的更换会影响已有账号密文，详见下文“配置、密钥与升级”。
+
+## 命令行部署（自动生成密钥）
+
+需要 Node.js 22.12+，推荐 Node.js 24。从源码部署：
 
 ```bash
+git clone --branch feat/cloudflare-workers https://github.com/shenghuo2/image-api-proxy.git
+cd image-api-proxy
 npm ci
+npm run secret:init
 npm run build
 npx --prefix worker wrangler login
-npx --prefix worker wrangler secret put PROXY_ADMIN_KEY --config wrangler.jsonc
-npm run deploy
+npm run deploy -- --secrets-file .dev.vars
 ```
 
-首次设置 Secret 时如询问创建同名 Worker，选择创建。登录和部署会访问 Cloudflare，构建只在本地执行。根目录的 `wrangler.jsonc` 用于此流程和一键部署；不要用明文变量替代 Secret。
+`secret:init` 自动生成随机密钥并写入根目录 `.dev.vars`，文件权限为 `0600`。**打开该文件查看登录密钥并保存到密码管理器**。文件已被 Git 忽略；存在时命令拒绝覆盖，避免更新时更换密钥。不要提交或分享该文件。
+
+更新同一个实例只需 `npm run build` 和 `npm run deploy`，无需再次生成或上传密钥。已有部署仍应保持相同 Worker 名称和 DO namespace。
 
 ## 首次配置与日常使用
 

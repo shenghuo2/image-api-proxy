@@ -37,7 +37,7 @@ npm --prefix worker run dev
 
 ## 配置维护
 
-根目录部署配置与 `worker/wrangler.jsonc` 保持相同业务配置，区别仅为 schema、入口和静态资源的相对路径。修改绑定、兼容日期、migration 或变量时同步两份配置；一键部署允许用户为自己的实例修改 Worker 名称。根目录与 worker 目录的 `.dev.vars.example` 均仅放占位提示。
+根目录部署配置与 `worker/wrangler.jsonc` 保持相同业务配置，区别仅为 schema、入口和静态资源的相对路径。修改绑定、兼容日期、migration 或变量时同步两份配置；一键部署允许用户为自己的实例修改 Worker 名称。根目录 `.env.example`、`.dev.vars.example` 和 worker 目录的 `.dev.vars.example` 中管理员密钥均留空，避免 Cloudflare 密码框预填示例值。`npm run secret:init` 在本地生成根目录 `.dev.vars`，不输出密钥、不覆盖已有文件。
 
 调整 Worker 配置后运行 `npm --prefix worker run types` 更新绑定类型。测试池的 Miniflare/Wrangler 通过 overrides 与锁文件固定兼容版本，升级时一起检查运行时兼容性。不要删除 migration 或更换固定对象名来升级已有实例。
 
@@ -60,7 +60,7 @@ GitHub Actions 执行类型、格式、功能测试、负载测试和两个部�
 
 完整构建后按 [使用指南](USAGE.md) 发布。首次上线用独立测试 key 验证普通/流式生成、任务领取、过期和重启恢复；真实生成会消耗上游额度。关注 Cloudflare 的请求、CPU、内存错误、SQL 行数与 DO Duration，保留不明确的扣费项供人工核对。
 
-README 按钮固定指向 `https://github.com/shenghuo2/image-api-proxy/tree/feat/cloudflare-workers`。`main` 保留 Go/Docker 实现，`feat/cloudflare-workers` 维护完整 Worker 工程；更新 Worker 时推送 `feat/cloudflare-workers`，不要覆盖默认 `main` 分支。仅存在本地 worktree 或仅部署到 workers.dev 不足以更新按钮源码。按钮必须指向已发布的公开 GitHub/GitLab 仓库根目录（可含分支），不能指向 `worker/`。发布分支或仓库迁移后更新 README 按钮 URL。官方行为见 [Deploy to Cloudflare 文档](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
+使用指南中的按钮固定指向 `https://github.com/shenghuo2/image-api-proxy/tree/feat/cloudflare-workers`。`main` 保留 Go/Docker 实现，`feat/cloudflare-workers` 维护完整 Worker 工程；更新 Worker 时推送 `feat/cloudflare-workers`，不要覆盖默认 `main` 分支。仅存在本地 worktree 或仅部署到 workers.dev 不足以更新按钮源码。按钮必须指向已发布的公开 GitHub/GitLab 仓库根目录（可含分支），不能指向 `worker/`。发布分支或仓库迁移后更新使用指南中的按钮 URL。官方行为见 [Deploy to Cloudflare 文档](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
 
 ## 数据和日志
 

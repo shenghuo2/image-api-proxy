@@ -7,12 +7,13 @@
   },
   "scripts": {
     "build": "npm --prefix frontend ci && npm --prefix worker ci && npm --prefix frontend run build",
-    "deploy": "npm exec --prefix worker -- wrangler deploy --config wrangler.jsonc"
+    "deploy": "npm exec --prefix worker -- wrangler deploy --config wrangler.jsonc",
+    "secret:init": "node scripts/init-secret.mjs"
   },
   "cloudflare": {
     "bindings": {
       "PROXY_ADMIN_KEY": {
-        "description": "管理员登录和账号 Token 加密密钥。使用 openssl rand -hex 32 生成并妥善备份，不要填写 NovelAI Token 或示例占位值。"
+        "description": "必填：这是管理面板的登录密码，不是 NovelAI Token。请用密码管理器生成并保存至少 32 字符的随机密码，再粘贴到此密码框；模板留空，不会自动生成。已克隆源码可运行 npm run secret:init，在 .dev.vars 查看随机密钥。"
       },
       "PROXY": {
         "description": "自动创建 SQLite Durable Object，保存账号、配额、队列和短期任务结果；无需 D1 或 R2。"

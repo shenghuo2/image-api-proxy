@@ -1,2 +1,3 @@
-# Generate with openssl rand -hex 32; never commit .dev.vars.
-PROXY_ADMIN_KEY=replace-with-at-least-32-random-characters
+# Required: paste your own random admin key (at least 32 characters).
+# Or run npm run secret:init at the repository root; never commit .dev.vars.
+PROXY_ADMIN_KEY=
