@@ -1,0 +1,37 @@
+name: Worker checks
+on:
+  push:
+    branches: [feat/cloudflare-workers]
+    paths: ['worker/**', 'frontend/**', 'package.json', 'package-lock.json', 'wrangler.jsonc', '.dev.vars.example', '.github/workflows/worker.yml']
+  pull_request:
+    branches: [feat/cloudflare-workers]
+    paths: ['worker/**', 'frontend/**', 'package.json', 'package-lock.json', 'wrangler.jsonc', '.dev.vars.example', '.github/workflows/worker.yml']
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            worker/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: npm --prefix worker ci
+      - run: npm --prefix worker run types -- --check
+      - run: npm --prefix worker run check
+      - run: npm --prefix worker run format:check
+      - run: npm --prefix worker test
+      - run: npm --prefix worker run test:load
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-load-metrics
+          path: worker/artifacts/load.json
+          if-no-files-found: error
+      - run: npm --prefix worker run build
+      - run: npm run deploy -- --dry-run

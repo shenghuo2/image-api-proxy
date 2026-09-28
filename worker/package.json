@@ -1,0 +1,33 @@
+{
+  "name": "novelai-proxy-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "check": "tsc --noEmit",
+    "test": "vitest run --exclude test/load.test.ts",
+    "build:frontend": "npm --prefix ../frontend run build",
+    "build": "npm run build:frontend && wrangler deploy --dry-run --outdir dist",
+    "deploy": "npm run build:frontend && wrangler deploy",
+    "format": "prettier --write src test vitest.config.ts",
+    "format:check": "prettier --check src test vitest.config.ts",
+    "test:load": "vitest run test/load.test.ts",
+    "pretest": "npm run build:frontend"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@types/node": "^26.6.3",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.142.0"
+  },
+  "overrides": {
+    "@cloudflare/vitest-pool-workers": {
+      "miniflare": "5.20260926.0-alpha",
+      "wrangler": "4.142.0"
+    }
+  }
+}

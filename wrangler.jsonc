@@ -1,0 +1,45 @@
+{
+  "$schema": "worker/node_modules/wrangler/config-schema.json",
+  "name": "novelai-api-proxy",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-09-26",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "assets": {
+    "directory": "frontend/dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PROXY",
+        "class_name": "ProxyCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ProxyCoordinator"
+      ]
+    }
+  ],
+  "vars": {
+    "PROXY_QUEUE_SIZE": "64",
+    "PROXY_QUOTA_TTL_SECONDS": "300",
+    "PROXY_ADMIN_ORIGIN": ""
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "secrets": {
+    "required": [
+      "PROXY_ADMIN_KEY"
+    ]
+  }
+}

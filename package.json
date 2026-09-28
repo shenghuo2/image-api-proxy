@@ -1,0 +1,22 @@
+{
+  "name": "novelai-api-proxy-cloudflare",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "npm --prefix frontend ci && npm --prefix worker ci && npm --prefix frontend run build",
+    "deploy": "npm exec --prefix worker -- wrangler deploy --config wrangler.jsonc"
+  },
+  "cloudflare": {
+    "bindings": {
+      "PROXY_ADMIN_KEY": {
+        "description": "管理员登录和账号 Token 加密密钥。使用 openssl rand -hex 32 生成并妥善备份，不要填写 NovelAI Token 或示例占位值。"
+      },
+      "PROXY": {
+        "description": "自动创建 SQLite Durable Object，保存账号、配额、队列和短期任务结果；无需 D1 或 R2。"
+      }
+    }
+  }
+}

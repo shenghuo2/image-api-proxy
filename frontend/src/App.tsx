@@ -3,14 +3,13 @@ import { Button } from '@astryxdesign/core/Button'
 import {
   ArrowRight, BarChart3, Check, Clock3, Copy, CreditCard,
   KeyRound, LayoutDashboard, LockKeyhole, LogOut, Pencil, Plus,
-  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw, Users, ListOrdered, Images,
+  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw, Users, ListOrdered,
 } from 'lucide-react'
-import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQuota, type AdminSettings, type ArchiveStats, type ClientKey, type KeyPolicy } from './api'
+import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQuota, type AdminSettings, type ClientKey, type KeyPolicy } from './api'
 import { QueuePage } from './QueuePage'
-import { ArchivePage } from './ArchivePage'
 import { UsageHeatmap } from './UsageHeatmap'
 
-type View = 'overview' | 'queue' | 'accounts' | 'keys' | 'usage' | 'archive' | 'settings'
+type View = 'overview' | 'queue' | 'accounts' | 'keys' | 'usage' | 'settings'
 type DialogState =
   | { type: 'create' }
   | { type: 'edit'; key: ClientKey }
@@ -82,21 +81,20 @@ function Login({ onConnect, busy, error }: { onConnect: (key: string) => Promise
   </div>
 }
 
-function Sidebar({ view, setView, quota, showArchive, onLogout }: { view: View; setView: (view: View) => void; quota: AdminQuota | null; showArchive: boolean; onLogout: () => void }) {
+function Sidebar({ view, setView, quota, onLogout }: { view: View; setView: (view: View) => void; quota: AdminQuota | null; onLogout: () => void }) {
   const items: { id: View; label: string; icon: ReactNode }[] = [
     { id: 'overview', label: '概览', icon: <LayoutDashboard size={18} /> },
     { id: 'queue', label: '任务队列', icon: <ListOrdered size={18} /> },
     { id: 'accounts', label: '账号管理', icon: <Users size={18} /> },
     { id: 'keys', label: '密钥管理', icon: <KeyRound size={18} /> },
     { id: 'usage', label: '用量统计', icon: <BarChart3 size={18} /> },
-    { id: 'archive', label: '生成图库', icon: <Images size={18} /> },
     { id: 'settings', label: '配置', icon: <Settings size={18} /> },
   ]
   return <aside className="sidebar">
     <Brand />
     <div className="side-label">工作区</div>
     <nav aria-label="主导航" className="side-nav">
-      {items.filter((item) => item.id !== 'archive' || showArchive).map((item) => <button type="button" key={item.id} className={view === item.id ? 'active' : ''} aria-current={view === item.id ? 'page' : undefined} title={item.label} aria-label={item.label} onClick={() => setView(item.id)}>{item.icon}<span>{item.label}</span></button>)}
+      {items.map((item) => <button type="button" key={item.id} className={view === item.id ? 'active' : ''} aria-current={view === item.id ? 'page' : undefined} title={item.label} aria-label={item.label} onClick={() => setView(item.id)}>{item.icon}<span>{item.label}</span></button>)}
     </nav>
     <div className="side-spacer" />
     <div className="side-account"><span className="status-dot" /> <span>{quota ? `${quota.account_quotas?.length ?? 1} 个服务账号` : '服务账户'}</span></div>
@@ -217,10 +215,8 @@ function UsagePage({ keys, adminKey }: { keys: ClientKey[]; adminKey: string }) 
 }
 
 function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings: AdminSettings | null; busy: boolean; onChange: (changes: Partial<AdminSettings>) => void; onSaveAdminPath: (path: string) => Promise<void> }) {
-  const [days, setDays] = useState(settings?.archive_retention_days ?? 30)
-  const [capacity, setCapacity] = useState((settings?.archive_max_bytes ?? 20 * 1073741824) / 1073741824)
   const [adminPath, setAdminPath] = useState(settings?.admin_ui_path ?? '/console')
-  useEffect(() => { if (settings) { setDays(settings.archive_retention_days); setCapacity(settings.archive_max_bytes / 1073741824); setAdminPath(settings.admin_ui_path) } }, [settings])
+  useEffect(() => { if (settings) setAdminPath(settings.admin_ui_path) }, [settings])
   const validAdminPath = adminPath.length <= 128 && /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(adminPath) && !['admin', 'ai', 'image', 'user', 'quota', 'healthz', 'jobs'].includes(adminPath.split('/')[1])
   return <>
     <div className="page-intro"><div><span className="eyebrow">CONFIGURATION</span><h1>配置</h1></div></div>
@@ -234,20 +230,16 @@ function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings:
     <section className="page-section settings-section"><div className="section-heading"><h2>生成权限</h2></div>
       <div className="policy-row"><div className="policy-row-top"><div><strong>允许分配单次多图</strong><small>开启后可在单个密钥中单独授权；多图请求全部消耗点数，不使用 Opus 配额</small></div><label className="switch"><input type="checkbox" checked={settings?.allow_multi_image ?? false} disabled={!settings || busy} onChange={(event) => onChange({ allow_multi_image: event.target.checked })} aria-label="允许分配单次多图" /><span /></label></div></div>
     </section>
-    <section className="page-section settings-section"><div className="section-heading"><h2>图片归档</h2></div>
-      <div className="policy-row"><div className="policy-row-top"><div><strong>归档成功生成的图片</strong><small>保存原始 PNG 与小于 100 KiB 的 JPEG 缩略图</small></div><label className="switch"><input type="checkbox" checked={settings?.archive_enabled ?? false} disabled={!settings || busy} onChange={(event) => onChange({ archive_enabled: event.target.checked })} aria-label="开启图片归档" /><span /></label></div></div>
-      <div className="archive-settings"><label>保留天数（-1 不限）<input type="number" min="-1" max="36500" step="1" value={days} disabled={!settings || busy} onChange={(event) => setDays(Number(event.target.value))} /></label><label>容量上限（GiB）<input type="number" min="0.001" max="1024" step="0.1" value={capacity} disabled={!settings || busy} onChange={(event) => setCapacity(Number(event.target.value))} /></label><button type="button" disabled={!settings || busy || days < -1 || days > 36500 || capacity < 0.001 || capacity > 1024} onClick={() => onChange({ archive_retention_days: days, archive_max_bytes: Math.round(capacity * 1073741824) })}>保存保留策略</button></div>
-    </section>
   </>
 }
 
-const emptyPolicy: KeyPolicy = { name: '', account_id: 'pool', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_mode: 'images', opus_limit_percent: 0, opus_limit_images: 0, allow_multi_image: false, archive_enabled: true, queue_limit: -1 }
+const emptyPolicy: KeyPolicy = { name: '', account_id: 'pool', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_mode: 'images', opus_limit_percent: 0, opus_limit_images: 0, allow_multi_image: false, queue_limit: -1 }
 
 function KeyForm({ existing, accounts, multiImageAvailable, busy, error, onSave, onClose }: { existing?: ClientKey; accounts: Account[]; multiImageAvailable: boolean; busy: boolean; error: string | null; onSave: (policy: KeyPolicy) => Promise<void>; onClose: () => void }) {
   const [policy, setPolicy] = useState<KeyPolicy>(existing ? {
     name: existing.name, account_id: existing.account_id, allow_fixed_anlas: existing.allow_fixed_anlas, fixed_anlas_limit: existing.fixed_anlas_limit,
     allow_purchased_anlas: existing.allow_purchased_anlas, purchased_anlas_limit: existing.purchased_anlas_limit,
-    allow_opus: existing.allow_opus, opus_limit_mode: existing.opus_limit_mode, opus_limit_percent: existing.opus_limit_percent, opus_limit_images: existing.opus_limit_images, allow_multi_image: existing.allow_multi_image, archive_enabled: existing.archive_enabled, queue_limit: existing.queue_limit,
+    allow_opus: existing.allow_opus, opus_limit_mode: existing.opus_limit_mode, opus_limit_percent: existing.opus_limit_percent, opus_limit_images: existing.opus_limit_images, allow_multi_image: existing.allow_multi_image, queue_limit: existing.queue_limit,
   } : emptyPolicy)
   const update = <K extends keyof KeyPolicy>(key: K, value: KeyPolicy[K]) => setPolicy((previous) => ({ ...previous, [key]: value }))
   const submit = (event: FormEvent) => {
@@ -262,7 +254,6 @@ function KeyForm({ existing, accounts, multiImageAvailable, busy, error, onSave,
     <div className="policy-row"><div className="policy-row-top"><div><strong>付费购入点数</strong><small>另行购买的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_purchased_anlas} onChange={(event) => update('allow_purchased_anlas', event.target.checked)} aria-label="允许使用付费购入点数" /><span /></label></div><div className="field inline"><label htmlFor="purchased-limit">累计上限（-1 为不限）</label><input id="purchased-limit" type="number" min="-1" max="1000000000" step="1" value={policy.purchased_anlas_limit} onChange={(event) => update('purchased_anlas_limit', Number(event.target.value))} /></div></div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>Opus 配额</strong><small>此密钥可用的免费生成次数</small></div><label className="switch"><input type="checkbox" checked={policy.allow_opus} onChange={(event) => update('allow_opus', event.target.checked)} aria-label="允许使用 Opus 配额" /><span /></label></div><div className="segmented policy-segmented" role="group" aria-label="Opus 限制方式"><button type="button" aria-pressed={policy.opus_limit_mode === 'images'} className={policy.opus_limit_mode === 'images' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'images')}>按次数</button><button type="button" aria-pressed={policy.opus_limit_mode === 'percent'} className={policy.opus_limit_mode === 'percent' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'percent')}>按比例自动回充</button></div>{policy.opus_limit_mode === 'images' ? <div className="field inline"><label htmlFor="opus-limit">累计上限（-1 为不限）</label><input id="opus-limit" type="number" min="-1" max="10000000" step="1" value={policy.opus_limit_images} onChange={(event) => update('opus_limit_images', Number(event.target.value))} /></div> : <div className="field inline"><label htmlFor="opus-percent">满额占比（额度条约 {fmt(Math.floor(policy.opus_limit_percent * 1730 / 100))} 次）</label><input id="opus-percent" type="number" min="0" max="100" step="0.1" value={policy.opus_limit_percent} onChange={(event) => update('opus_limit_percent', Number(event.target.value))} /></div>}</div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>单次多图</strong><small>{multiImageAvailable ? '允许一次生成 2–4 张；全部消耗点数，不使用 Opus 配额' : '全局功能已关闭；请先在配置页开启'}</small></div><label className="switch"><input type="checkbox" checked={policy.allow_multi_image} disabled={!multiImageAvailable} onChange={(event) => update('allow_multi_image', event.target.checked)} aria-label="允许此密钥单次多图" /><span /></label></div></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>参与图片归档</strong><small>只影响之后成功生成的图片</small></div><label className="switch"><input type="checkbox" checked={policy.archive_enabled} onChange={(event) => update('archive_enabled', event.target.checked)} aria-label="允许此密钥参与归档" /><span /></label></div></div>
     {error && <div className="form-error" role="alert">{error}</div>}
     <div className="modal-actions"><Button label="取消" variant="secondary" onClick={onClose} /><Button label={existing ? '保存更改' : '签发密钥'} variant="primary" type="submit" isLoading={busy} /></div>
   </form>
@@ -288,7 +279,6 @@ export function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [quota, setQuota] = useState<AdminQuota | null>(null)
   const [settings, setSettings] = useState<AdminSettings | null>(null)
-  const [archiveStats, setArchiveStats] = useState<ArchiveStats | null>(null)
   const [quotaError, setQuotaError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -305,14 +295,13 @@ export function App() {
     setAccounts([])
     setQuota(null)
     setSettings(null)
-    setArchiveStats(null)
     setError(null)
     setDialog(null)
   }, [])
 
   const load = useCallback(async (key: string) => {
     setLoading(true)
-    const [keyResult, quotaResult, settingsResult, accountResult, archiveResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key), api.accounts(key), api.imageStats(key)])
+    const [keyResult, quotaResult, settingsResult, accountResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key), api.accounts(key)])
     if (keyResult.status === 'rejected') {
       if (keyResult.reason instanceof ApiError && keyResult.reason.status === 401) logout()
       else setError(describeError(keyResult.reason))
@@ -331,13 +320,10 @@ export function App() {
     else setError(describeError(settingsResult.reason))
     if (accountResult.status === 'fulfilled') setAccounts(accountResult.value)
     else setError(describeError(accountResult.reason))
-    if (archiveResult.status === 'fulfilled') setArchiveStats(archiveResult.value)
     setLoading(false)
   }, [logout])
 
   useEffect(() => { if (adminKey) void load(adminKey) }, [adminKey, load])
-  const showArchive = settings?.archive_enabled !== false || archiveStats === null || archiveStats.ever_archived || archiveStats.count > 0 || archiveStats.pending > 0
-  useEffect(() => { if (!showArchive && view === 'archive') setView('usage') }, [showArchive, view])
 
   const connect = async (key: string) => {
     setBusy(true)
@@ -441,9 +427,9 @@ export function App() {
   if (!adminKey) return <Login onConnect={connect} busy={busy} error={error} />
 
   return <div className="app-shell">
-    <Sidebar view={view} setView={setView} quota={quota} showArchive={showArchive} onLogout={logout} />
+    <Sidebar view={view} setView={setView} quota={quota} onLogout={logout} />
     <div className="main-shell">
-      <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'queue' ? '任务队列' : view === 'accounts' ? '账号管理' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : view === 'archive' ? '生成图库' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
+      <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'queue' ? '任务队列' : view === 'accounts' ? '账号管理' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
       <main className="content">
         {error && <div className="inline-alert page-alert" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={16} /></button></div>}
         {view === 'overview' && <Overview keys={keys} quota={quota} quotaError={quotaError} onRefreshQuota={() => void refreshQuota()} refreshingQuota={refreshingQuota} setView={setView} onCreate={startCreateKey} />}
@@ -451,7 +437,6 @@ export function App() {
         {view === 'accounts' && <AccountsPage accounts={accounts} keys={keys} quota={quota} busy={busy} onCreate={() => setDialog({ type: 'account-create' })} onEdit={(account) => setDialog({ type: 'account-edit', account })} onDelete={(account) => setDialog({ type: 'account-delete', account })} onRefresh={(account) => void refreshAccount(account)} />}
         {view === 'keys' && <KeysPage keys={keys} onCreate={startCreateKey} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} onReveal={(key) => { if (key.key) { setCopied(false); setDialog({ type: 'reveal', key: key.key, name: key.name }) } }} onRotate={(key) => setDialog({ type: 'rotate', key })} />}
         {view === 'usage' && <UsagePage keys={keys} adminKey={adminKey} />}
-        {view === 'archive' && showArchive && <ArchivePage adminKey={adminKey} keys={keys} onStatsChange={setArchiveStats} />}
         {view === 'settings' && <SettingsPage settings={settings} busy={busy} onChange={(changes) => void changeSettings(changes)} onSaveAdminPath={changeAdminPath} />}
       </main>
     </div>

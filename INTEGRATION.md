@@ -1,5 +1,7 @@
 # 第三方项目接入指南
 
+> Cloudflare Worker 版沿用下列核心业务协议；图库已移除、任务结果保留 30 分钟，其他差异见 [Worker 使用指南](docs/USAGE.md)。本文的本地磁盘、Docker 和归档说明仅适用于保留的 Go 实现。
+
 本文面向已有 NovelAI 图片接口调用代码的项目。代理沿用官方图片接口的方法、路径、Bearer 认证和请求体格式；通常只需替换图片 API 基址，并将官方 Token 换成管理员签发的客户端 key。代理只实现下表中的图片接口，并增加按 key 的额度管理、统计和串行队列，不是整个 NovelAI API 的通用镜像。
 
 部署和完整接口说明见 [README.md](README.md) 与 [API.md](API.md)。下文用 `BASE` 表示**代理根地址**，例如本机的 `http://127.0.0.1:8787` 或生产环境的 `https://nai.example.com`。不要把管理面板的地址当作 API 基址。

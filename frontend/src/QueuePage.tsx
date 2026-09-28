@@ -48,7 +48,7 @@ export function QueuePage({ adminKey, keys, onAuthFailure }: { adminKey: string;
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(() => { if (!document.hidden) void refresh() }, 5000)
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh() }, 10000)
     const onVisible = () => { if (!document.hidden) void refresh() }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
