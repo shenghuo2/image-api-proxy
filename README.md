@@ -46,3 +46,7 @@
 - [部署与使用](docs/USAGE.md)：安装、管理面板、图库、数据与反向代理。
 - [API 参考](API.md) / [接入指南](INTEGRATION.md)：请求格式与第三方接入。
 - [开发指南](docs/DEVELOPMENT.md)：本地运行与测试。
+
+## License
+
+本项目采用 [GNU GPL v3.0](LICENSE)（`GPL-3.0-only`）。第三方依赖遵循各自的许可证。
