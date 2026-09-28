@@ -47,3 +47,7 @@
 - [API 参考](API.md) / [接入指南](INTEGRATION.md)：请求格式和已有项目接入。
 - [开发指南](docs/DEVELOPMENT.md)：架构、本地开发、测试和发布。
 - [验证记录](worker/VALIDATION.md)：测试结果与复现方法。
+
+## License
+
+本项目采用 [GNU GPL v3.0](LICENSE)（`GPL-3.0-only`）。第三方依赖遵循各自的许可证。

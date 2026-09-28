@@ -19,5 +19,6 @@
         "description": "自动创建 SQLite Durable Object，保存账号、配额、队列和短期任务结果；无需 D1 或 R2。"
       }
     }
-  }
+  },
+  "license": "GPL-3.0-only"
 }
