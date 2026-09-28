@@ -4,7 +4,7 @@
 
 ## 本地运行
 
-本机运行需要 Go 1.22+；先构建前端（Node.js 20.19+ 或 22.12+），再启动 Go 服务：
+需要 Go 1.22+ 和 Node.js 20.19+ 或 22.12+。先构建前端，再启动服务：
 
 ```bash
 cd frontend
@@ -18,7 +18,7 @@ PROXY_ADMIN_KEY='<管理员密钥>' PROXY_NAI_TOKEN='<NovelAI Token>' \
   go run ./cmd/novelai-api-proxy
 ```
 
-本机也可跳过前端构建，仅启动 API。Go 服务会自动挂载工作目录下的 `frontend/dist/`；从其他目录启动时，设置 `PROXY_FRONTEND_DIR` 为构建产物目录。显式指定的目录必须含有 `index.html`，否则启动失败。
+只调试 API 时可以跳过前端构建。Go 服务会自动挂载工作目录下的 `frontend/dist/`；从其他目录启动时，设置 `PROXY_FRONTEND_DIR` 为构建产物目录。显式指定的目录必须含有 `index.html`，否则启动失败。
 
 ## 验证
 

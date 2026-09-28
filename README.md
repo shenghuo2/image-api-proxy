@@ -14,7 +14,7 @@
 
 ## 选择版本
 
-**推荐在自己的 VPS 上部署 Docker 版**，尤其适合重视出口 IP 质量、稳定性和可控性的用户。可以自行选择信誉较好的 VPS 出口 IP；IP 是否“纯净”取决于服务商与历史使用情况，并不是自建就一定更安全。Cloudflare 版使用平台出口，无法自行指定独享出口 IP。
+**推荐用自己的 VPS 部署 Docker 版**，方便选择和管理出口 IP。IP 质量取决于服务商和使用历史；Cloudflare 版使用平台出口，无法指定独享 IP。
 
 | 对比 | Docker 版（推荐） | Cloudflare Workers 版 |
 | --- | --- | --- |
@@ -23,7 +23,7 @@
 | 图片图库与归档 | 支持，可配置保留时间与容量 | 不提供 |
 | 持久化任务结果 | 完成后保留 24 小时，归档另计 | 完成后保留 30 分钟 |
 | 数据存储 | 本机持久化卷 | SQLite Durable Object |
-| 成本 | VPS 费用 | 按下述负载，Free 请求、SQL 与存储额度够用 |
+| 成本 | VPS 费用 | Free 套餐可用，具体用量见部署教程 |
 | 适合谁 | 长期使用、需要图库、希望自主控制出口 | 轻量使用、无需图库、希望快速部署 |
 | 源码分支 | `main` | `feat/cloudflare-workers` |
 
@@ -37,9 +37,9 @@
 
 ### Cloudflare Workers
 
-不想维护服务器时，按 [Cloudflare 部署教程](https://github.com/shenghuo2/image-api-proxy/blob/feat/cloudflare-workers/docs/USAGE.md) 一键部署；按钮和表单填写说明都在该教程中。
+不想维护服务器时，可按 [Cloudflare 部署教程](https://github.com/shenghuo2/image-api-proxy/blob/feat/cloudflare-workers/docs/USAGE.md) 一键部署。
 
-每天约 1000 次生成、平均结果约 2 MiB 的模拟负载下，Cloudflare Free 计划的请求、SQL 读写及存储额度够用；实际 CPU、内存与上游吞吐仍需验证。详见 [免费额度对比](https://github.com/shenghuo2/image-api-proxy/tree/feat/cloudflare-workers#当前使用量与-free-额度对比)。
+每天约 1000 次生成的免费额度测算见 [Cloudflare 教程](https://github.com/shenghuo2/image-api-proxy/blob/feat/cloudflare-workers/docs/USAGE.md#free-计划额度)。
 
 ## 文档
 
