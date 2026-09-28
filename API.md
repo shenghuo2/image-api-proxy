@@ -1,8 +1,8 @@
 # API 使用方法
 
-> Cloudflare Worker 版沿用下列核心业务协议；图库已移除、任务结果保留 30 分钟，其他差异见 [Worker 使用指南](docs/USAGE.md)。本文的本地磁盘、Docker 和归档说明仅适用于保留的 Go 实现。
+> Worker 版没有图库，任务结果保留 30 分钟。具体限制见 [使用指南](docs/USAGE.md#接口限制)；下文的磁盘和归档配置仅适用于 Docker 版。
 
-本代理的客户端请求使用 NovelAI 风格的 Bearer 认证。以下示例用 `BASE` 表示代理根地址，例如 `http://127.0.0.1:8787`；生产环境应使用 HTTPS。其他项目从官方图片接口迁移时，先看 [第三方项目接入指南](INTEGRATION.md)。
+请求使用 Bearer 认证。示例中的 `BASE` 是代理根地址，本地可用 `http://127.0.0.1:8787`，公网使用 HTTPS。已有项目接入见 [接入指南](INTEGRATION.md)。
 
 ## 认证
 

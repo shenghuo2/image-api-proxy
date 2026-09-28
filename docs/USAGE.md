@@ -1,10 +1,10 @@
-# 部署与使用指南
+# Cloudflare 部署与使用
 
-面向部署者、管理员和 API 使用者。开发、测试与架构见 [开发指南](DEVELOPMENT.md)，免费额度对比见 [README](../README.md#当前使用量与-free-额度对比)。
+无需服务器，使用 Cloudflare Workers、SQLite Durable Object 和静态管理页面。开发说明见 [开发指南](DEVELOPMENT.md)。
 
 ## 一键部署到 Cloudflare
 
-准备一个 Cloudflare 账号、GitHub/GitLab 账号和有效的 NovelAI 订阅。管理员登录密钥与 NovelAI Token 是两回事：**部署时只填管理员密钥，NovelAI Token 在部署完成后通过管理面板添加。**
+需要 Cloudflare 账号、GitHub/GitLab 账号和 NovelAI 订阅。部署时填写管理员密钥；NovelAI Token 在部署完成后添加。
 
 ### 1. 创建自己的实例
 
@@ -22,17 +22,17 @@
 | `PROXY_ADMIN_KEY` | **必填：粘贴你自己生成并保存的随机管理员密钥，至少 32 字符** |
 | 其他变量和绑定 | 保持默认，SQLite DO 和静态资源自动创建 |
 
-**`PROXY_ADMIN_KEY` 是密码输入框，输入内容显示为圆点。圆点不代表系统已生成可用密码。** 模板现在留空，不再预填 `replace-…` 示例字符串。如果旧页面仍显示圆点，请全选并替换，再保存你填入的真实密钥；管理面板登录时要使用同一个值。
+`PROXY_ADMIN_KEY` 默认留空，填写后显示为圆点。请保存自己填入的密钥，稍后用它登录管理面板；如果页面已有内容，先清空再填写。
 
 建议直接用密码管理器生成并保存至少 32 字符的随机密码，再粘贴到这个输入框。若已克隆源码，也可运行 `npm run secret:init` 自动生成 64 位十六进制密钥，打开根目录 `.dev.vars`，复制 `PROXY_ADMIN_KEY=` 右侧的值到表单。
 
-Cloudflare 官方按钮没有文档化的随机 Secret 生成配置，无法由仓库控制该密码框的显示或增加生成按钮。这里采用空字段和明确提示；管理员密钥也用于账号 Token 加密，**不会写入构建日志或运行日志**。本地自动生成命令只输出文件位置，不输出密钥。
+部署表单需要手动填写密钥。密钥不会出现在部署日志中，请自行保存。
 
 ### 3. 部署并登录
 
 点击部署，等待构建完成。复制 Cloudflare 给出的 `https://<worker>.<账号子域>.workers.dev` 地址，在后面加 `/console/` 打开管理面板，用第 2 步保存的管理员密钥登录。
 
-部署过程无需绑定 R2、创建 D1 或配置自有域名。若失败，查看 Build 日志中的错误；日志不会提供管理员密钥。密钥遗失后的更换会影响已有账号密文，详见下文“配置、密钥与升级”。
+无需 R2、D1 或自有域名。部署失败时查看 Build 日志；密钥管理见下文。
 
 ## 命令行部署（自动生成密钥）
 
@@ -52,7 +52,26 @@ npm run deploy -- --secrets-file .dev.vars
 
 更新同一个实例只需 `npm run build` 和 `npm run deploy`，无需再次生成或上传密钥。已有部署仍应保持相同 Worker 名称和 DO namespace。
 
-## 首次配置与日常使用
+## Free 计划额度
+
+按每天 1000 次生成、每次结果约 2 MiB 的模拟负载，请求、SQL 读写和存储均在免费额度内。
+
+| 项目 | 1000 次生成的测算用量 | Free 额度 | 占比 |
+| --- | --- | --- | --- |
+| Worker 请求 | 2,803 次/天 | 100,000 次/天 | 2.80% |
+| DO 请求（含 alarm） | 3,703 次/天 | 100,000 次/天 | 3.70% |
+| DO 时长（按全天活跃计算） | 11,059.2 GB-s/天 | 13,000 GB-s/天 | 85.07% |
+| SQLite 读取 | 479,287 行/天 | 5,000,000 行/天 | 9.59% |
+| SQLite 写入 | 35,834 行/天 | 100,000 行/天 | 35.83% |
+| SQLite 存储 | 抽样峰值 37.23 MiB | 账号合计 5 GB | 约 0.78% |
+| Worker CPU | 待线上验证 | 10 ms/请求 | — |
+| 单 isolate 内存 | 待线上验证 | 128 MB | — |
+
+免费额度由同账号下的项目共享。额外轮询、页面访问和重复下载会增加用量；队列页连续打开一天，每 10 秒刷新约增加 8,640 次请求。DO 时长的余量最小，约为 15%。
+
+单并发要完成 1000 次/天，平均每次生成及传输需在 86.4 秒内完成。实际速度取决于上游。测试方法见 [测试记录](../worker/VALIDATION.md)，额度以 [Workers 限制](https://developers.cloudflare.com/workers/platform/limits/)和 [DO 定价](https://developers.cloudflare.com/durable-objects/platform/pricing/)为准。
+
+## 开始使用
 
 1. 在“账号”页面添加 NovelAI Token，并启用账号。多个启用账号可组成轮询池。
 2. 在“密钥”页面为每位调用者或每个项目创建独立客户端 key，配置账号池/固定账号、订阅 Anlas、购入 Anlas 和 Opus 权限及额度。多图需要全局和 key 双重授权。
@@ -79,9 +98,9 @@ npm run deploy -- --secrets-file .dev.vars
 
 管理员密钥应备份到密码管理器。浏览器只在当前标签页的 sessionStorage 保存登录密钥，退出登录时清除。变更管理路径后记下新地址；路径本身不代替鉴权。
 
-## API 与 Go 版的差异
+## 接口限制
 
-非图库业务沿用 [API.md](../API.md) 的认证、账号/密钥、配额字段和生成规则，包括 `/image` 别名、JSON 和 multipart 请求、Opus 按次数/按比例分配、多图双重授权、`/quota`、官方格式 `/user/subscription` 和 `/admin/usage/hours`。此处差异优先于 Go 版说明：
+认证、生成和配额字段见 [API 参考](../API.md)。Worker 版有以下限制：
 
 - `/admin/images*` 返回 `404`，归档相关设置与 key 字段不再支持；`PUT /admin/settings` 只接受 `allow_multi_image`、`admin_ui_path`。
 - 请求体上限为 **16 MiB**。同步/流式响应直接转发，不缓存、不重新编码；流式成功计数仅检查完整最终 PNG 帧。
@@ -95,10 +114,9 @@ npm run deploy -- --secrets-file .dev.vars
 - 结果从到期时刻起不可访问；物理分块由 alarm/后续请求批量清理。清理若与生成重叠，会等待当前执行完成，不保证数据库中的字节在第 30 分钟瞬间删除。
 - 管理队列页可见时每 10 秒刷新；客户端按响应的 `Retry-After` / `poll_after_seconds` 查询任务，等待较久时从 5 秒退避到 15 秒。
 
-`GET /admin/runtime` 使用管理员认证，返回当前实例从启动以来的 `rows_read`、`rows_written`、`database_bytes`、`reserved_bytes` 和容量/结果限制。SQL 指标包含索引维护和删除，并保守计入 alarm 读写（每次按一行估计）；DO 重启会重置内存中的计数，不应将其当成 Cloudflare 账号日用量。账号总量应查看 Cloudflare Dashboard。
+`GET /admin/runtime` 可查看数据库大小、容量预留和当前实例读写次数。计数在 DO 重启后重置；账号每日用量请看 Cloudflare Dashboard。
 
-修改管理入口路径即时生效，旧入口及其资源返回 404。自定义路径不是认证替代。为确保旧路径立即失效，静态资源请求经过 Worker；这些请求计入 Worker 请求量，不能按“所有静态请求都不计费”估算。
-
+修改管理路径后旧入口立即返回 404，新入口仍需密钥登录。页面和静态资源都经过 Worker，会计入请求量。
 
 ## 常见问题
 
@@ -112,6 +130,6 @@ npm run deploy -- --secrets-file .dev.vars
 | 一键部署找不到前端或静态目录 | 确认复制完整仓库，构建命令为 npm run build |
 | Free 超额或 CPU/内存错误 | 查看 Cloudflare Dashboard 的 Workers/DO 统计；减少轮询和负载，并检查同账号其他项目 |
 
-`GET /healthz` 可检查部署是否响应，但不代表 NovelAI Token 有效或生成成功。`GET /admin/runtime` 是应用局部快照，账号实际额度与计量以 Cloudflare Dashboard 为准。
+`GET /healthz` 用于检查服务是否在线。添加 NovelAI 账号后，另行测试生成接口。
 
-默认 Worker 名称为 `novelai-api-proxy`。早期线上验证实例名为 `novelai-api-proxy-free`，验证记录中的地址保留为历史事实；更新该已有实例时应沿用原名称。修改名称会创建另一个 Worker，不会迁移其 DO 数据。
+默认 Worker 名称为 `novelai-api-proxy`。更新已有实例时沿用原名称；改名会创建新 Worker，原数据不会自动迁移。

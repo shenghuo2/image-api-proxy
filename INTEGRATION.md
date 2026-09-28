@@ -1,10 +1,10 @@
 # 第三方项目接入指南
 
-> Cloudflare Worker 版沿用下列核心业务协议；图库已移除、任务结果保留 30 分钟，其他差异见 [Worker 使用指南](docs/USAGE.md)。本文的本地磁盘、Docker 和归档说明仅适用于保留的 Go 实现。
+> Worker 版没有图库，任务结果保留 30 分钟。具体限制见 [使用指南](docs/USAGE.md#接口限制)；下文的磁盘和归档配置仅适用于 Docker 版。
 
-本文面向已有 NovelAI 图片接口调用代码的项目。代理沿用官方图片接口的方法、路径、Bearer 认证和请求体格式；通常只需替换图片 API 基址，并将官方 Token 换成管理员签发的客户端 key。代理只实现下表中的图片接口，并增加按 key 的额度管理、统计和串行队列，不是整个 NovelAI API 的通用镜像。
+接入已有项目，通常只需修改两处：图片 API 基址换成代理地址，官方 Token 换成管理员签发的客户端 key。请求方法、路径和请求体保持官方格式。支持的接口见下表。
 
-部署和完整接口说明见 [README.md](README.md) 与 [API.md](API.md)。下文用 `BASE` 表示**代理根地址**，例如本机的 `http://127.0.0.1:8787` 或生产环境的 `https://nai.example.com`。不要把管理面板的地址当作 API 基址。
+部署见 [README](README.md)，完整字段见 [API 参考](API.md)。`BASE` 表示代理根地址，例如 `https://nai.example.com`，不包含 `/console/`。
 
 ## 1. 获取客户端 key
 
@@ -116,7 +116,7 @@ with open("request.json", "rb") as source:
                     output.write(chunk)
 ```
 
-上述代码只展示传输层；`request.json` 仍须符合 NovelAI 对所选模型的要求。`generate-image-stream` 的成功响应应交给项目现有的官方流式帧解析器，不能当 ZIP 保存。
+以上示例负责发送请求；`request.json` 仍须符合 NovelAI 对所选模型的要求。`generate-image-stream` 的成功响应应交给项目现有的官方流式帧解析器，不能当 ZIP 保存。
 
 ## 4. 读取当前 key 的额度
 
@@ -180,7 +180,7 @@ curl --fail-with-body -sS "$BASE/user/subscription" \
 
 现有客户端若依赖官方 Cookie、`/user/login`、未列出的路由、查询参数或任意自定义请求头，需要调整集成方式。代理不提供 `/user/login`、图像标注或标签建议，只转发少数必要请求头，并移除上游 `Set-Cookie`；受支持路径之外的官方功能应继续由原项目自行处理。
 
-## 接入验收
+## 接入检查
 
 1. `GET /healthz` 返回 `200`，确认代理地址可达。
 2. 用客户端 key 请求 `GET /quota` 返回 `200`，确认权限与累计上限符合预期。
