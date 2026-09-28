@@ -4,6 +4,19 @@
 
 其他项目的迁移步骤、请求示例和差异说明见 [INTEGRATION.md](INTEGRATION.md)；完整接口与配额结算规则见 [API.md](API.md)。
 
+## 选择版本
+
+| 版本 | 分支 | 部署与功能 |
+| --- | --- | --- |
+| [Go / Docker](https://github.com/shenghuo2/image-api-proxy/tree/main) | `main`（默认） | Docker Compose，支持图库和长期归档 |
+| [Cloudflare Workers](https://github.com/shenghuo2/image-api-proxy/tree/feat/cloudflare-workers) | `feat/cloudflare-workers` | 无需服务器，SQLite DO，任务结果保留 30 分钟，无图库 |
+
+Cloudflare 一键部署（始终使用 `feat/cloudflare-workers` 分支）：
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fshenghuo2%2Fimage-api-proxy%2Ftree%2Ffeat%2Fcloudflare-workers)
+
+两个版本独立维护，运行数据不自动互迁。Docker 主分支继续维护，分叉前代码保留在 Git 历史中（基线 `6e799b4`）。
+
 ## 部署
 
 可使用 Docker Compose 一起构建 Go 后端和管理面板。用 `openssl rand -hex 32` 生成管理员密钥；将 `.env.example` 复制为 `.env`，设置 `PROXY_ADMIN_KEY`。可选的 `PROXY_NAI_TOKEN` 仅在首次启动时导入为默认账号；其后在管理面板添加或更换 Token。若暂未配置任何账号，仍可登录管理面板；官方额度查询及生成操作会不可用。不要把 `.env` 或 Token 提交到仓库。
