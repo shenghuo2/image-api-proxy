@@ -84,4 +84,3 @@ PROXY_TRUSTED_PROXY_CIDRS=172.17.0.1/32
 ```
 
 `172.17.0.1` 仅是示例：Docker 端口映射可能让容器把所有外部连接都看成网桥网关。应以容器实际看到的连接地址为准，使用精确的 `/32`，并重建容器使环境变量生效。**只允许远端 Nginx 主机访问代理的 8787 端口**，否则直连者也能伪造转发头。Docker 发布端口的流量可能绕过普通宿主机 `INPUT` 规则，需要在网络边界限制来源；使用 Docker iptables 后端时也可在 `DOCKER-USER` 链限制。Nginx 用 `$remote_addr` 覆盖传入的 `X-Forwarded-For`，不要将客户端原有的该请求头原样透传。其他部署拓扑可通过 `PROXY_TRUSTED_PROXY_CIDRS` 配置实际受控代理的精确 CIDR；多个 CIDR 以逗号分隔。
-
