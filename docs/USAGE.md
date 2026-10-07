@@ -27,14 +27,14 @@ docker run -d --name novelai-api-proxy --restart unless-stopped \
   -e PROXY_STATE_PATH=/data/keys.json \
   -v novelai-proxy-data:/data \
   -p 127.0.0.1:8787:8787 \
-  shenghuo2/novelai-api-proxy:v0.1.4-relay-compat
+  shenghuo2/novelai-api-proxy:v0.1.5-relay-compat
 ```
 
 ## 访问与升级
 
-本分支的兼容中转站镜像使用 `vX.Y.Z-relay-compat` 标签，与对应主线版本共用基础版本号。当前版本为 `v0.1.4-relay-compat`，包含主线修复及 New API 账号支持。
+本分支的兼容中转站镜像使用 `vX.Y.Z-relay-compat` 标签，随特性分支独立发布。当前版本为 `v0.1.5-relay-compat`，包含主线修复、New API 备用官方账号分流及生成步数开关。
 
-镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.4-relay-compat`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
+镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.5-relay-compat`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
 
 升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
 
@@ -63,6 +63,10 @@ Compose 默认仅映射到主机 `127.0.0.1:8787`，以非 root 身份和只读�
 前端源码位于 [`frontend/`](../frontend/)，使用 React、Vite 和 Astryx Design System。默认部署时由 Go 服务直接提供构建产物；前端开发与独立部署步骤见 [frontend/README.md](../frontend/README.md)。面板可管理账号，签发、查看、轮换、调整及撤销 key，核对待处理额度，并按 key 查看累计估算用量。按次数限制的 Opus 配额仍是累计上限，可设为 `-1`；按比例分配的 Opus 额度则为逐 key 独立的可回充额度条。每把 key 可设置最多等待请求数，任务队列页展示当前执行项和等待池。配置页可启用单次多图的全局权限，再逐 key 授权；默认关闭。官方额度仍按默认 5 分钟缓存查询，不新增高频轮询。
 
 在“添加账号”选择 **New API 中转站**，填写中转站根地址和 Key，再勾选允许的 4.5 Full、4.5 Curated、5 Full、5 Curated 模型。地址默认为 `https://momo.bailan.shop`，Key 仅加密保存在服务端。给不同设备分别签发本地密钥并绑定该账号，可在“用量统计”查看各设备的成功生成次数、图片张数和公式参考点数。中转站不提供可信的实际余额或 Opus 使用量，`/user/subscription` 返回的固定 10000 不能用来推算还可生成多少次；密钥的点数上限只控制本地预算。流式请求使用 `/ai/generate-image-stream`，普通请求使用 `/ai/generate-image`。当前中转站的 4.5 Full 流式请求可能返回上游 402，代理会原样返回错误，不自动换路由。参考点数未扣除免费生成、试用或实际计费差异，不能视为真实扣费或剩余额度。
+
+在中转账号的添加或编辑页面可选择 **备用官方账号**，默认不设置。图生图、重绘、Enhance（包括 Max 放大重绘）、V5 扩散超分、Vibe 编码和导演工具会在转发前分流到该账号；参考图本身不会触发图生图分流。文生图继续使用中转站及已勾选的模型，包括付费尺寸和步数。备用账号用量仍记在原设备的 key 下，并遵守该 key 的点数与 Opus 权限；如需免费尺寸的图生图，在密钥编辑页启用 **备用账号 Opus 配额**，按次数或比例分配。官方点数依旧按保守预留记账。备用账号停用时相应功能不可用，上游错误不会触发重发。变更备用账号前需关闭绑定 key 的 Opus 并核对其待处理 Opus，移除所有备用引用后才可删除该官方账号。
+
+“配置 → 生成权限”的 **允许超过 28 steps 生成** 是独立总开关，默认开启以保留旧行为，最高仍为 50 steps。关闭后，所有账号的文生图、图生图、重绘和 Enhance 请求都限制为 28 steps；被拦截的请求不发往上游、不扣预算。图片工具的独立超分、Vibe 编码和导演工具接口不受此开关影响。
 
 ## 图片归档
 

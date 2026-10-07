@@ -97,10 +97,10 @@ func TestOpusSharePriorityAndLegacyOvercommit(t *testing.T) {
 		{ID: "fixed", AccountID: "a", AllowOpus: true, OpusLimitMode: "percent", OpusLimitPercent: 50},
 		{ID: "pool", AccountID: poolAccountID, AllowOpus: true, OpusLimitMode: "percent", OpusLimitPercent: 33},
 	}
-	if got := opusShare(keys, keys[1], "a"); got < .1649 || got > .1651 {
+	if got := opusShare(keys, keys[1], "a", nil); got < .1649 || got > .1651 {
 		t.Fatalf("pool should receive 33%% of the unreserved half: %v", got)
 	}
-	if got := opusShare(keys, keys[1], "b"); got < .3299 || got > .3301 {
+	if got := opusShare(keys, keys[1], "b", nil); got < .3299 || got > .3301 {
 		t.Fatalf("pool should receive 33%% of unrestricted account: %v", got)
 	}
 	accounts := []upstreamAccount{{ID: "a"}, {ID: "b"}}
@@ -111,7 +111,7 @@ func TestOpusSharePriorityAndLegacyOvercommit(t *testing.T) {
 	if err := validateOpusShares(keys, keys, accounts); err != nil {
 		t.Fatalf("legacy overcommit should remain readable: %v", err)
 	}
-	if !opusConfiguredOvercommit(keys, keys[0]) || opusShare(keys, keys[0], "a") >= .5 {
+	if !opusConfiguredOvercommit(keys, keys[0], nil) || opusShare(keys, keys[0], "a", nil) >= .5 {
 		t.Fatal("legacy overcommit was not normalized and flagged")
 	}
 }

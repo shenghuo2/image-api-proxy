@@ -38,7 +38,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' 
   --data-binary @request.json "$BASE/ai/generate-image" --output image.zip
 ```
 
-生成、Vibe 编码、导演增强和扩散超分同时接受 JSON 或 `multipart/form-data` 请求体。multipart 中的 `request` part 必须是 JSON；图片等二进制 part 与原始 Content-Type 会原样转发给所选上游。代理只读取 `request` part 来估算费用。单次生成支持 `n_samples` 为 1–4；多图必须先在管理配置中全局开启、再逐 key 授权，默认均关闭。多图全部按点数预留，不使用 Opus 免费配额。中转站账号仅接收已启用模型的生成请求；`-inpainting` 型号使用对应基础模型的开关。同步和流式生成分别转发到同名上游路径，不自动切换。
+生成、Vibe 编码、导演增强和扩散超分同时接受 JSON 或 `multipart/form-data` 请求体。multipart 中的 `request` part 必须是 JSON；图片等二进制 part 与原始 Content-Type 会原样转发给所选上游。代理只读取 `request` part 来估算费用。单次生成支持 `n_samples` 为 1–4；多图必须先在管理配置中全局开启、再逐 key 授权，默认均关闭。多图全部按点数预留，不使用 Opus 免费配额。中转站账号仅接收已启用模型的文生图请求；图生图、重绘和 Enhance 使用配置的备用官方账号，`-inpainting` 型号仍受对应基础模型的开关限制。同步和流式生成分别转发到同名上游路径，不自动切换。
 
 响应图片、ZIP、Vibe 向量和流式帧不重新编码。上游状态码与响应体直接返回给客户端；代理自身的鉴权、队列、参数和配额错误由代理返回。
 
@@ -111,7 +111,13 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 
 `account_id` 选择上游账号。新 key 默认 `pool`，每次生成从已启用账号依次轮询，跳过额度不足或暂不可用的账号；也可指定 `GET /admin/accounts` 返回的账号 ID 进行固定绑定。停用账号后，池不会再选它，固定绑定的 key 在重新启用前不可生成。旧账本中没有 `account_id` 的 key 继续绑定 `default` 账号；已有用量的 key 不允许更换账号策略。所有账号共用同一条 FIFO 队列，不会跨账号并发转发。账号 Token 在服务端加密保存；更换管理员密钥后需重新录入无法解密的账号 Token。
 
-中转站账号示例：`{"name":"中转站","provider":"new_api","origin":"https://momo.bailan.shop","token":"<中转站 Key>","enabled_models":["nai-diffusion-4-5-full","nai-diffusion-4-5-curated","nai-diffusion-5-full","nai-diffusion-5-curated"]}`。`origin` 必须是无路径、查询或凭据的 HTTP(S) 根地址。中转站不提供可信的官方余额或 Opus 快照；`GET /admin/quota` 的官方汇总只包含可查询的官方账号，`account_quotas` 对中转站返回 `upstream_balance_known:false` 及空余额。混合账号池的预算无法归属到某个上游，单列在 `unattributed_pool_fixed_anlas` 和 `unattributed_pool_purchased_anlas`。固定绑定中转站的 key 不能启用 Opus，允许的 Anlas 上限作为本地预算；账号池只会把已启用模型的生成请求交给中转站。4.5 Full 的流式路由可能被该站以 402 拒绝，代理不会回退到普通路由。
+中转站账号示例：`{"name":"中转站","provider":"new_api","origin":"https://momo.bailan.shop","token":"<中转站 Key>","enabled_models":["nai-diffusion-4-5-full","nai-diffusion-4-5-curated","nai-diffusion-5-full","nai-diffusion-5-curated"],"fallback_account_id":"default"}`。`origin` 必须是无路径、查询或凭据的 HTTP(S) 根地址。中转站不提供可信的官方余额或 Opus 快照；`GET /admin/quota` 的官方汇总只包含可查询的官方账号，`account_quotas` 对中转站返回 `upstream_balance_known:false` 及空余额。混合账号池的预算无法归属到某个上游，单列在 `unattributed_pool_fixed_anlas` 和 `unattributed_pool_purchased_anlas`。允许的 Anlas 上限作为本地预算；账号池只会把已启用模型的文生图请求交给中转站。4.5 Full 的流式路由可能被该站以 402 拒绝，代理不会回退到普通路由。
+
+`fallback_account_id` 可在创建或编辑中转站账号时指定，省略时保留原配置，设为 `""` 则关闭备用账号。目标必须是已启用的 NovelAI 官方账号；禁止指向其他中转站、账号池或自身。`/ai/upscale`、`/ai/encode-vibe`、`/ai/augment-image` 及其 `/image` 别名使用备用账号；生成接口中的非 `generate` action、主输入 `image`/`mask`、`upscaled_enhance:true` 或 `-inpainting` 模型也使用备用账号。Vibe 和导演参考图不会被当作主输入图片。生成模型开关仍有效；不在启用列表中的模型不会通过备用账号放行。普通文生图的大尺寸及超过 28 steps 的请求仍使用中转站。没有备用账号或备用账号停用时，此类请求返回 503；停用中转账号也会停止其固定 key 的全部生成。
+
+分流在转发和预留前完成，使用原 key 的点数权限、上限及统计；备用官方账号按官方账号的保守预留和 Opus 规则记账。配置备用账号后，固定中转站 key 可显式启用 `allow_opus`，按次数或比例授权备用官方账号的免费额度；中转站请求继续扣本地点数预算。比例份额与直接绑定该官方账号的 key 共同受 100% 上限约束，余额与待核对量保存在该官方账号的 Opus bucket 中。未授权 Opus 时，符合官方免费条件的请求会被配额校验拒绝。`/user/subscription` 的点数仍是本地预算；已授权的备用账号 Opus 使用缓存快照展示。修改或移除备用账号前须关闭其固定 key 的 Opus 并核对待处理 Opus；被引用的备用账号不能删除，`GET /admin/accounts` 的 `fallback_reference_count` 返回引用数量。上游已经收到请求后发生 4xx、5xx 或断连时不会切换账号重发。
+
+`PUT /admin/settings` 的 `allow_high_steps` 默认 `true`，包括旧配置升级；关闭后，所有账号的生成、图生图、重绘和 Enhance 均只允许 1–28 steps，29–50 steps 返回 402 且不触达上游、不预留预算。普通接口、`/image` 别名、multipart 和持久化任务采用同一校验；开启时仍受 50 steps 参数上限限制。超分、编码及导演工具自身的路由不受此生成步数开关影响。
 
 签发或提高有限分配额时，代理使用各账号缓存的预计余额校验：固定 key 的剩余分配额不超过对应账号余额，池 key 的剩余分配额不超过已启用且可用账号扣除固定分配后的总余额。无限额度不预留固定点数，多把无限 key 可共享官方剩余额；管理统计中的 `unlimited_*_keys` 显示此类 key 数量，`unallocated_*` 只计算有限分配。旧版 `allocation_anlas` 仍可作为订阅点数上限的简写，旧账本也会映射为订阅点数策略。旧哈希 key 仍有效但无法显示明文，可通过轮换转换成新格式。NovelAI 决定实际先扣哪一类 Anlas，代理无法指定官方的扣费来源；这两个开关和上限控制的是**本地预算分类**，不是官方子账户。
 
@@ -124,7 +130,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 
 `GET /quota` 返回该 key 的账号策略、三组权限、已用量、待核对量、剩余量、成功生成次数、图片张数和当前队列长度，不触发官方请求，也不返回明文 key。比例模式的剩余量是逐账号可用次数的合计；无限累计模式的本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定官方 key 使用所属账号的预计余额，纯官方账号池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。包含中转站的 key 返回 `balance_source:"local_budget_upstream_unknown"`，点数最多显示 10000，仅为兼容客户端的本地预算，不代表上游余额。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。
 
-`GET /admin/keys` 和 `GET /quota` 另返回 `successful_generations`、`successful_images`、`formula_anlas`，分别为确认收到完整图片的生成请求次数、图片张数及公式参考点数；次数包含消耗 Anlas 与使用 Opus 的生成，一次多图只计 1 次请求。参考点数以像素和 steps 的基础公式计算，V5 基价乘 1.5，再加 Vibe/导演参考附加项，并按 `n_samples` 计入。它是未扣除免费生成、试用等因素的标价估算，**不是实际上游扣费**；旧请求无法回填。中转站的本地预算按该公式价扣减。官方账号仍使用保守预留；已计入的预算扣减分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。明确的 HTTP/流内 4xx 会退回预留；流式终图后断连仍计成功，其余不确定结果默认保留待核对预留。
+`GET /admin/keys` 和 `GET /quota` 另返回 `successful_generations`、`successful_images`、`formula_anlas`，分别为确认收到完整图片的生成请求次数、图片张数及公式参考点数；次数包含消耗 Anlas 与使用 Opus 的生成，一次多图只计 1 次请求。参考点数以像素和 steps 的基础公式计算，V5 基价乘 1.5，图生图和重绘按 `strength` 折算且基础费用至少 2 点，再加 Vibe/导演参考附加项，并按 `n_samples` 计入。它是未扣除免费生成、试用等因素的标价估算，**不是实际上游扣费**；旧请求无法回填。中转站的本地预算按该公式价扣减。官方账号仍使用保守预留；已计入的预算扣减分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。明确的 HTTP/流内 4xx 会退回预留；流式终图后断连仍计成功，其余不确定结果默认保留待核对预留。
 
 `PUT /admin/settings` 支持 `charge_pending_as_spent`（默认 `false`）。设为 `true` 会立即把所有 key 已有待核对预留（包括 Anlas 和 Opus 逐账号预留）提交为本地计费，并使之后无法确认结果的请求自动按预留值计费。预留已经包含在 spent/used 中，提交仅清除 pending，不重复扣减、不退款，也不增加成功生成次数。设置和已有预留在一个 SQLite 事务中提交，并等待当前 FIFO 请求结束；重启后仍会提交遗留预留。改回 `false` 只影响之后的未确认请求，不能恢复已提交的待核对状态。此选项是本地预算估算策略，不能证明上游实际扣费。
 

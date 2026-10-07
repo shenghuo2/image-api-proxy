@@ -383,15 +383,45 @@ func (h *ManagedHandler) accountCandidates(k clientKey) []upstreamAccount {
 	return available
 }
 
-func (h *ManagedHandler) accountCandidatesForJob(k clientKey, path, model string) []upstreamAccount {
+func (h *ManagedHandler) accountCandidatesForJob(k clientKey, path string, cost jobCost) []upstreamAccount {
 	accounts := h.accountCandidates(k)
 	available := make([]upstreamAccount, 0, len(accounts))
+	seen := make(map[string]bool)
 	for _, account := range accounts {
-		if account.supports(path, model) {
+		if account.provider() != providerNewAPI || account.supports(path, cost.Model) && !cost.RequiresOfficial {
+			if !seen[account.ID] {
+				available = append(available, account)
+				seen[account.ID] = true
+			}
+			continue
+		}
+		// Model switches remain permissions for generation, including image operations.
+		if cost.Model != "" && !account.supports(path, cost.Model) {
+			continue
+		}
+		if fallback, ok := h.accounts.find(account.FallbackAccountID); ok && !fallback.Disabled && fallback.provider() == providerNovelAI && !seen[fallback.ID] {
+			account = fallback
+			available = append(available, account)
+			seen[account.ID] = true
+		}
+	}
+	return available
+}
+
+func (h *ManagedHandler) opusAccountCandidates(k clientKey) []upstreamAccount {
+	accounts := h.accounts.snapshot()
+	id := keyOpusAccountID(k, accounts)
+	var available []upstreamAccount
+	for _, account := range accounts {
+		if !account.Disabled && account.provider() == providerNovelAI && (id == poolAccountID || id == account.ID) {
 			available = append(available, account)
 		}
 	}
 	return available
+}
+
+func (h *ManagedHandler) keyCanUseOpus(k clientKey) bool {
+	return len(h.opusAccountCandidates(k)) > 0
 }
 
 // Pool views combine projected balances while the job itself uses one account.
@@ -401,7 +431,17 @@ func (h *ManagedHandler) quotaForKey(ctx context.Context, k clientKey) (*quotaSn
 		return nil, errors.New("no enabled upstream account")
 	}
 	if keyAccountID(k) != poolAccountID {
-		return h.currentQuota(ctx, accounts[0].ID, false)
+		q, err := h.currentQuota(ctx, accounts[0].ID, false)
+		if err == nil && q.UnknownBalance && k.AllowOpus {
+			for _, fallback := range h.opusAccountCandidates(k) {
+				if official, fallbackErr := h.currentQuota(ctx, fallback.ID, false); fallbackErr == nil {
+					combined := *official
+					combined.UnknownBalance = true
+					return &combined, nil
+				}
+			}
+		}
+		return q, err
 	}
 	combined := &quotaSnapshot{}
 	combined.Official.OpusNegative = true
@@ -624,6 +664,10 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		http.Error(w, "multi-image disabled in settings", http.StatusPaymentRequired)
 		return
 	}
+	if cost.Steps > 28 && !h.settings.snapshot().AllowHighSteps {
+		http.Error(w, "generation above 28 steps disabled in settings", http.StatusPaymentRequired)
+		return
+	}
 	var current clientKey
 	found := false
 	for _, candidate := range h.store.snapshot() {
@@ -636,7 +680,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		http.Error(w, "multi-image unavailable for key", http.StatusPaymentRequired)
 		return
 	}
-	accounts := h.accountCandidatesForJob(current, selected.path, cost.Model)
+	accounts := h.accountCandidatesForJob(current, selected.path, cost)
 	if len(accounts) == 0 {
 		http.Error(w, "no enabled upstream account supports this route and model", http.StatusServiceUnavailable)
 		return
@@ -828,7 +872,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 					if ok {
 						bucket.Pending = max(0, bucket.Pending-hold.Opus)
 						if refund && opusMode(keys[i]) == "percent" {
-							bucket.Balance = min(opusCapacity(keys, keys[i], selectedAccount.ID), bucket.Balance+hold.Opus*opusUnit)
+							bucket.Balance = min(opusCapacity(keys, keys[i], selectedAccount.ID, h.accounts.snapshot()), bucket.Balance+hold.Opus*opusUnit)
 						}
 						keys[i].OpusBuckets[selectedAccount.ID] = bucket
 					}

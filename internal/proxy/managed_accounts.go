@@ -14,13 +14,14 @@ const providerNovelAI = "novelai"
 const providerNewAPI = "new_api"
 
 type upstreamAccount struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	TokenCiphertext string   `json:"token_ciphertext"`
-	Disabled        bool     `json:"disabled"`
-	Provider        string   `json:"provider,omitempty"`
-	Origin          string   `json:"origin,omitempty"`
-	EnabledModels   []string `json:"enabled_models,omitempty"`
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	TokenCiphertext   string   `json:"token_ciphertext"`
+	Disabled          bool     `json:"disabled"`
+	Provider          string   `json:"provider,omitempty"`
+	Origin            string   `json:"origin,omitempty"`
+	EnabledModels     []string `json:"enabled_models,omitempty"`
+	FallbackAccountID string   `json:"fallback_account_id,omitempty"`
 }
 
 func (a upstreamAccount) provider() string {
@@ -177,6 +178,17 @@ func keyAccountID(k clientKey) string {
 		return defaultAccountID
 	}
 	return k.AccountID
+}
+
+// Opus permission on a relay key applies only to its configured official fallback.
+func keyOpusAccountID(k clientKey, accounts []upstreamAccount) string {
+	id := keyAccountID(k)
+	for _, account := range accounts {
+		if account.ID == id && account.provider() == providerNewAPI && account.FallbackAccountID != "" {
+			return account.FallbackAccountID
+		}
+	}
+	return id
 }
 
 func totalRemainingForAccount(keys []clientKey, accountID string) (fixed, purchased int64) {

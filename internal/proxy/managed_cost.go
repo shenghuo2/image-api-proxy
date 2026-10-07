@@ -12,14 +12,16 @@ import (
 )
 
 type jobCost struct {
-	Full         int64
-	FormulaAnlas int64
-	Model        string
-	Extras       int64
-	OpusEligible bool
-	V5           bool
-	MultiImage   bool
-	Samples      int
+	Full             int64
+	FormulaAnlas     int64
+	Model            string
+	Extras           int64
+	OpusEligible     bool
+	V5               bool
+	MultiImage       bool
+	Samples          int
+	Steps            int
+	RequiresOfficial bool
 }
 
 func estimateJob(path string, body []byte, contentType string) (jobCost, error) {
@@ -58,12 +60,19 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 		return jobCost{}, errors.New("unsupported route")
 	}
 	var payload struct {
-		Model      string `json:"model"`
+		Model      string          `json:"model"`
+		Action     string          `json:"action"`
+		Image      json.RawMessage `json:"image"`
+		Mask       json.RawMessage `json:"mask"`
 		Parameters struct {
 			Width            int               `json:"width"`
 			Height           int               `json:"height"`
 			Steps            int               `json:"steps"`
 			Samples          int               `json:"n_samples"`
+			Image            json.RawMessage   `json:"image"`
+			Mask             json.RawMessage   `json:"mask"`
+			Strength         *float64          `json:"strength"`
+			UpscaledEnhance  bool              `json:"upscaled_enhance"`
 			Vibes            []json.RawMessage `json:"reference_image_multiple"`
 			VibesCached      []json.RawMessage `json:"reference_image_multiple_cached"`
 			References       []json.RawMessage `json:"director_reference_images"`
@@ -74,6 +83,13 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 		return jobCost{}, err
 	}
 	p := payload.Parameters
+	imageOperation := payload.Action != "" && payload.Action != "generate" ||
+		hasImageInput(payload.Image) || hasImageInput(payload.Mask) ||
+		hasImageInput(p.Image) || hasImageInput(p.Mask) || p.UpscaledEnhance ||
+		strings.HasSuffix(payload.Model, "-inpainting")
+	if p.Strength != nil && (*p.Strength < 0 || *p.Strength > 1) {
+		return jobCost{}, errors.New("unsupported image strength")
+	}
 	vibeCount := len(p.Vibes) + len(p.VibesCached)
 	referenceCount := len(p.References) + len(p.ReferencesCached)
 	if !allowedGenerationModel(payload.Model) || p.Width < 64 || p.Height < 64 || p.Width > 2048 || p.Height > 2048 || p.Steps < 1 || p.Steps > 50 || p.Samples < 1 || p.Samples > 4 || vibeCount > 16 || referenceCount > 10 {
@@ -85,6 +101,10 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 	if v5 {
 		base = math.Ceil(base * 1.5)
 	}
+	base = math.Max(2, base)
+	if imageOperation && p.Strength != nil {
+		base = math.Max(2, math.Ceil(base**p.Strength))
+	}
 	extra := max(0, vibeCount-4)*2 + referenceCount*5
 	extraHold := int64(0)
 	if extra > 0 {
@@ -92,15 +112,22 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 	}
 	singleImageHold := int64(math.Ceil((base+float64(extra))*1.2)) + 5
 	return jobCost{
-		Full:         singleImageHold * int64(p.Samples),
-		FormulaAnlas: int64(base+float64(extra)) * int64(p.Samples),
-		Model:        payload.Model,
-		Extras:       extraHold,
-		OpusEligible: p.Samples == 1 && p.Steps <= 28 && p.Width*p.Height <= 1048576,
-		V5:           v5,
-		MultiImage:   p.Samples > 1,
-		Samples:      p.Samples,
+		Full:             singleImageHold * int64(p.Samples),
+		FormulaAnlas:     int64(base+float64(extra)) * int64(p.Samples),
+		Model:            payload.Model,
+		Extras:           extraHold,
+		OpusEligible:     p.Samples == 1 && p.Steps <= 28 && p.Width*p.Height <= 1048576,
+		V5:               v5,
+		MultiImage:       p.Samples > 1,
+		Samples:          p.Samples,
+		Steps:            p.Steps,
+		RequiresOfficial: imageOperation,
 	}, nil
+}
+
+func hasImageInput(value json.RawMessage) bool {
+	value = bytes.TrimSpace(value)
+	return len(value) > 0 && !bytes.Equal(value, []byte("null")) && !bytes.Equal(value, []byte(`""`))
 }
 
 func jobRequestJSON(body []byte, contentType string) ([]byte, error) {

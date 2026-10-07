@@ -75,6 +75,8 @@ export interface Account {
   provider: 'novelai' | 'new_api'
   origin?: string
   enabled_models?: string[]
+  fallback_account_id?: string
+  fallback_reference_count: number
 }
 
 export interface AccountInput {
@@ -84,6 +86,7 @@ export interface AccountInput {
   provider: Account['provider']
   origin?: string
   enabled_models?: string[]
+  fallback_account_id?: string
 }
 
 export interface AccountQuota {
@@ -130,6 +133,7 @@ export interface KeyPolicy {
 export interface AdminSettings {
   charge_pending_as_spent: boolean
   allow_multi_image: boolean
+  allow_high_steps: boolean
   archive_enabled: boolean
   archive_retention_days: number
   archive_max_bytes: number

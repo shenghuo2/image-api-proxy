@@ -35,8 +35,8 @@ func opusUnits(percent float64) int64 {
 	return int64(math.Floor(math.Max(0, math.Min(100, percent))*float64(opusFullUnits)/100 + 0.0001))
 }
 
-func opusShare(keys []clientKey, key clientKey, accountID string) float64 {
-	if key.Revoked || !key.AllowOpus || opusMode(key) != "percent" || (keyAccountID(key) != accountID && keyAccountID(key) != poolAccountID) {
+func opusShare(keys []clientKey, key clientKey, accountID string, accounts []upstreamAccount) float64 {
+	if key.Revoked || !key.AllowOpus || opusMode(key) != "percent" || (keyOpusAccountID(key, accounts) != accountID && keyOpusAccountID(key, accounts) != poolAccountID) {
 		return 0
 	}
 	var fixed, pooled float64
@@ -44,13 +44,13 @@ func opusShare(keys []clientKey, key clientKey, accountID string) float64 {
 		if candidate.Revoked || !candidate.AllowOpus || opusMode(candidate) != "percent" {
 			continue
 		}
-		if keyAccountID(candidate) == accountID {
+		if keyOpusAccountID(candidate, accounts) == accountID {
 			fixed += candidate.OpusLimitPercent
-		} else if keyAccountID(candidate) == poolAccountID {
+		} else if keyOpusAccountID(candidate, accounts) == poolAccountID {
 			pooled += candidate.OpusLimitPercent
 		}
 	}
-	if keyAccountID(key) == accountID {
+	if keyOpusAccountID(key, accounts) == accountID {
 		return key.OpusLimitPercent / math.Max(100, fixed)
 	}
 	return math.Max(0, 1-math.Min(1, fixed/100)) * key.OpusLimitPercent / math.Max(100, pooled)
@@ -60,7 +60,7 @@ func validateOpusShares(before, after []clientKey, accounts []upstreamAccount) e
 	poolTotal := func(keys []clientKey) float64 {
 		var sum float64
 		for _, key := range keys {
-			if !key.Revoked && key.AllowOpus && opusMode(key) == "percent" && keyAccountID(key) == poolAccountID {
+			if !key.Revoked && key.AllowOpus && opusMode(key) == "percent" && keyOpusAccountID(key, accounts) == poolAccountID {
 				sum += key.OpusLimitPercent
 			}
 		}
@@ -73,7 +73,7 @@ func validateOpusShares(before, after []clientKey, accounts []upstreamAccount) e
 		count := func(keys []clientKey) float64 {
 			var sum float64
 			for _, key := range keys {
-				if !key.Revoked && key.AllowOpus && opusMode(key) == "percent" && keyAccountID(key) == account.ID {
+				if !key.Revoked && key.AllowOpus && opusMode(key) == "percent" && keyOpusAccountID(key, accounts) == account.ID {
 					sum += key.OpusLimitPercent
 				}
 			}
@@ -86,21 +86,21 @@ func validateOpusShares(before, after []clientKey, accounts []upstreamAccount) e
 	return nil
 }
 
-func opusConfiguredOvercommit(keys []clientKey, key clientKey) bool {
+func opusConfiguredOvercommit(keys []clientKey, key clientKey, accounts []upstreamAccount) bool {
 	if !key.AllowOpus || opusMode(key) != "percent" {
 		return false
 	}
 	var sum float64
 	for _, candidate := range keys {
-		if !candidate.Revoked && candidate.AllowOpus && opusMode(candidate) == "percent" && keyAccountID(candidate) == keyAccountID(key) {
+		if !candidate.Revoked && candidate.AllowOpus && opusMode(candidate) == "percent" && keyOpusAccountID(candidate, accounts) == keyOpusAccountID(key, accounts) {
 			sum += candidate.OpusLimitPercent
 		}
 	}
 	return sum > 100.000001
 }
 
-func opusCapacity(keys []clientKey, key clientKey, accountID string) int64 {
-	return int64(math.Floor(float64(opusFullUnits)*opusShare(keys, key, accountID) + 0.0001))
+func opusCapacity(keys []clientKey, key clientKey, accountID string, accounts []upstreamAccount) int64 {
+	return int64(math.Floor(float64(opusFullUnits)*opusShare(keys, key, accountID, accounts) + 0.0001))
 }
 
 func bucketFor(key *clientKey, accountID string) opusBucket {
@@ -123,12 +123,12 @@ func opusAllocated(keys []clientKey, accountID string) int64 {
 	return total
 }
 
-func distributeOpus(keys []clientKey, accountID string, amount int64, predicted bool) {
+func distributeOpus(keys []clientKey, accountID string, amount int64, predicted bool, accounts []upstreamAccount) {
 	if amount <= 0 {
 		return
 	}
 	for index := range keys {
-		share := opusShare(keys, keys[index], accountID)
+		share := opusShare(keys, keys[index], accountID, accounts)
 		if share <= 0 {
 			continue
 		}
@@ -137,7 +137,7 @@ func distributeOpus(keys []clientKey, accountID string, amount int64, predicted 
 			continue
 		}
 		credit := int64(math.Floor(float64(amount)*share + 0.0001))
-		limit := opusCapacity(keys, keys[index], accountID)
+		limit := opusCapacity(keys, keys[index], accountID, accounts)
 		credit = min(credit, max(0, limit-bucket.Balance))
 		bucket.Balance += credit
 		if predicted {
@@ -177,16 +177,16 @@ func reduceOpus(keys []clientKey, accountID string, projected, loss int64) {
 	}
 }
 
-func seedOpusBuckets(keys []clientKey, accountID string, available int64, accountCount int) {
+func seedOpusBuckets(keys []clientKey, accountID string, available int64, accountCount int, accounts []upstreamAccount) {
 	for index := range keys {
 		if bucket, ok := keys[index].OpusBuckets[accountID]; ok && bucket.Seeded {
-			limit := opusCapacity(keys, keys[index], accountID)
+			limit := opusCapacity(keys, keys[index], accountID, accounts)
 			bucket.Balance = min(bucket.Balance, limit)
 			keys[index].OpusBuckets[accountID] = bucket
 		}
 	}
 	for index := range keys {
-		share := opusShare(keys, keys[index], accountID)
+		share := opusShare(keys, keys[index], accountID, accounts)
 		if share <= 0 {
 			continue
 		}
@@ -197,7 +197,7 @@ func seedOpusBuckets(keys []clientKey, accountID string, available int64, accoun
 		if bucket.Seeded {
 			continue
 		}
-		balance := min(opusCapacity(keys, keys[index], accountID), int64(math.Floor(float64(available)*share+0.0001)))
+		balance := min(opusCapacity(keys, keys[index], accountID, accounts), int64(math.Floor(float64(available)*share+0.0001)))
 		if keys[index].PolicyVersion < 2 {
 			legacyRemaining := max(0, opusEffectiveLimit(keys[index])-keys[index].OpusUsed) * opusUnit
 			balance = min(balance, legacyRemaining)
@@ -215,14 +215,14 @@ func seedOpusBuckets(keys []clientKey, accountID string, available int64, accoun
 func rebalanceOpusBuckets(keys []clientKey, states map[string]opusAccountState, accounts []upstreamAccount) {
 	count := 0
 	for _, account := range accounts {
-		if !account.Disabled {
+		if !account.Disabled && account.provider() == providerNovelAI {
 			count++
 		}
 	}
 	if count > 1 {
 		allReady := true
 		for _, account := range accounts {
-			if !account.Disabled && states[account.ID].ConfirmedAt.IsZero() {
+			if !account.Disabled && account.provider() == providerNovelAI && states[account.ID].ConfirmedAt.IsZero() {
 				allReady = false
 				break
 			}
@@ -236,11 +236,11 @@ func rebalanceOpusBuckets(keys []clientKey, states map[string]opusAccountState, 
 				weights := make(map[string]int64)
 				var totalWeight int64
 				for _, account := range accounts {
-					if account.Disabled {
+					if account.Disabled || account.provider() != providerNovelAI {
 						continue
 					}
 					state := states[account.ID]
-					weight := min(opusCapacity(keys, *key, account.ID), int64(math.Floor(float64(state.Projected)*opusShare(keys, *key, account.ID)+0.0001)))
+					weight := min(opusCapacity(keys, *key, account.ID, accounts), int64(math.Floor(float64(state.Projected)*opusShare(keys, *key, account.ID, accounts)+0.0001)))
 					weights[account.ID] = weight
 					totalWeight += weight
 				}
@@ -250,7 +250,7 @@ func rebalanceOpusBuckets(keys []clientKey, states map[string]opusAccountState, 
 				budget := min(max(0, opusEffectiveLimit(*key)-key.OpusUsed)*opusUnit, totalWeight)
 				remaining := budget
 				for _, account := range accounts {
-					if account.Disabled {
+					if account.Disabled || account.provider() != providerNovelAI {
 						continue
 					}
 					allocation := budget * weights[account.ID] / totalWeight
@@ -269,14 +269,14 @@ func rebalanceOpusBuckets(keys []clientKey, states map[string]opusAccountState, 
 		}
 	}
 	for _, account := range accounts {
-		if account.Disabled {
+		if account.Disabled || account.provider() != providerNovelAI {
 			continue
 		}
 		state, ok := states[account.ID]
 		if !ok {
 			continue
 		}
-		seedOpusBuckets(keys, account.ID, state.Projected, count)
+		seedOpusBuckets(keys, account.ID, state.Projected, count, accounts)
 		if excess := opusAllocated(keys, account.ID) - state.Projected; excess > 0 {
 			reduceOpus(keys, account.ID, opusAllocated(keys, account.ID), excess)
 		}
@@ -304,7 +304,7 @@ func topUpIncreasedOpusShare(before, after []clientKey, states map[string]opusAc
 			if account.Disabled || !ok {
 				continue
 			}
-			increase := opusShare(after, *key, account.ID) - opusShare(before, previous, account.ID)
+			increase := opusShare(after, *key, account.ID, accounts) - opusShare(before, previous, account.ID, accounts)
 			if increase <= 0 {
 				continue
 			}
@@ -313,7 +313,7 @@ func topUpIncreasedOpusShare(before, after []clientKey, states map[string]opusAc
 				continue
 			}
 			credit := int64(math.Floor(float64(state.Projected)*increase + 0.0001))
-			credit = min(credit, max(0, opusCapacity(after, *key, account.ID)-bucket.Balance))
+			credit = min(credit, max(0, opusCapacity(after, *key, account.ID, accounts)-bucket.Balance))
 			credit = min(credit, max(0, state.Projected-opusAllocated(after, account.ID)))
 			bucket.Balance += credit
 			key.OpusBuckets[account.ID] = bucket
@@ -351,7 +351,7 @@ func (h *ManagedHandler) syncOpusAccount(accountID, token string, quota upstream
 			}
 			delta := confirmed - state.Projected
 			if delta >= opusPercentUnits {
-				distributeOpus(keys, accountID, delta/opusPercentUnits*opusPercentUnits, false)
+				distributeOpus(keys, accountID, delta/opusPercentUnits*opusPercentUnits, false, h.accounts.snapshot())
 			} else if delta < 0 {
 				reduceOpus(keys, accountID, state.Projected, -delta)
 			}
@@ -397,7 +397,7 @@ func (h *ManagedHandler) predictOpusAccount(accountID string, now time.Time) (*o
 			previous := state.Projected
 			state.Projected = min(opusFullUnits, state.Projected+opusPercentUnits)
 			state.PredictedUnits = state.Projected - previous
-			distributeOpus(keys, accountID, state.PredictedUnits, true)
+			distributeOpus(keys, accountID, state.PredictedUnits, true, h.accounts.snapshot())
 			state.Predicted = true
 			accounts[accountID] = state
 		}
@@ -424,7 +424,7 @@ func (h *ManagedHandler) opusRemainingForKey(key clientKey) (int64, int64, bool,
 	if opusMode(key) != "percent" {
 		return displayRemaining(opusRemaining(key)), opusEffectiveLimit(key), false, time.Time{}
 	}
-	for _, account := range h.accountCandidates(key) {
+	for _, account := range h.opusAccountCandidates(key) {
 		if _, err := h.predictOpusAccount(account.ID, time.Now()); err != nil {
 			slog.Warn("Opus prediction unavailable", "account_id", account.ID, "error", err)
 		}
@@ -434,10 +434,10 @@ func (h *ManagedHandler) opusRemainingForKey(key clientKey) (int64, int64, bool,
 	var remaining, capacity int64
 	var predicted bool
 	var confirmed time.Time
-	for _, account := range h.accountCandidates(key) {
+	for _, account := range h.opusAccountCandidates(key) {
 		for _, candidate := range keys {
 			if candidate.ID == key.ID {
-				capacity += opusCapacity(keys, candidate, account.ID) / opusUnit
+				capacity += opusCapacity(keys, candidate, account.ID, h.accounts.snapshot()) / opusUnit
 			}
 		}
 		state, ok := states[account.ID]

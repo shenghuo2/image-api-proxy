@@ -9,29 +9,37 @@ import (
 )
 
 type publicAccount struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Enabled         bool     `json:"enabled"`
-	TokenConfigured bool     `json:"token_configured"`
-	KeyCount        int      `json:"key_count"`
-	Provider        string   `json:"provider"`
-	Origin          string   `json:"origin,omitempty"`
-	EnabledModels   []string `json:"enabled_models,omitempty"`
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	Enabled                bool     `json:"enabled"`
+	TokenConfigured        bool     `json:"token_configured"`
+	KeyCount               int      `json:"key_count"`
+	Provider               string   `json:"provider"`
+	Origin                 string   `json:"origin,omitempty"`
+	EnabledModels          []string `json:"enabled_models,omitempty"`
+	FallbackAccountID      string   `json:"fallback_account_id,omitempty"`
+	FallbackReferenceCount int      `json:"fallback_reference_count"`
 }
 
 type accountInput struct {
-	Name          string   `json:"name"`
-	Token         string   `json:"token"`
-	Enabled       *bool    `json:"enabled"`
-	Provider      string   `json:"provider"`
-	Origin        *string  `json:"origin"`
-	EnabledModels []string `json:"enabled_models"`
+	Name              string   `json:"name"`
+	Token             string   `json:"token"`
+	Enabled           *bool    `json:"enabled"`
+	Provider          string   `json:"provider"`
+	Origin            *string  `json:"origin"`
+	EnabledModels     []string `json:"enabled_models"`
+	FallbackAccountID *string  `json:"fallback_account_id"`
 }
 
 func (h *ManagedHandler) viewAccount(account upstreamAccount, keys []clientKey) publicAccount {
 	_, err := h.vault.open(account.TokenCiphertext)
 	view := publicAccount{ID: account.ID, Name: account.Name, Enabled: !account.Disabled, TokenConfigured: err == nil,
-		Provider: account.provider(), Origin: account.Origin, EnabledModels: account.EnabledModels}
+		Provider: account.provider(), Origin: account.Origin, EnabledModels: account.EnabledModels, FallbackAccountID: account.FallbackAccountID}
+	for _, source := range h.accounts.snapshot() {
+		if source.FallbackAccountID == account.ID {
+			view.FallbackReferenceCount++
+		}
+	}
 	for _, key := range keys {
 		if keyAccountID(key) == account.ID {
 			view.KeyCount++
@@ -51,6 +59,14 @@ func (h *ManagedHandler) validAccountChoice(id string) bool {
 	}
 	account, ok := h.accounts.find(id)
 	return ok && !account.Disabled
+}
+
+func (h *ManagedHandler) validFallbackAccount(provider, id string) bool {
+	if id == "" {
+		return true
+	}
+	account, ok := h.accounts.find(id)
+	return provider == providerNewAPI && ok && !account.Disabled && account.provider() == providerNovelAI
 }
 
 func (h *ManagedHandler) duplicateAccountToken(token, exceptID string) bool {
@@ -168,6 +184,10 @@ func (h *ManagedHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if input.FallbackAccountID != nil && !h.validFallbackAccount(input.Provider, *input.FallbackAccountID) {
+		http.Error(w, "fallback must be an enabled official account", http.StatusBadRequest)
+		return
+	}
 	if h.duplicateAccountToken(input.Token, "") {
 		http.Error(w, "account token already exists", http.StatusConflict)
 		return
@@ -193,6 +213,9 @@ func (h *ManagedHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Enabled != nil {
 		account.Disabled = !*input.Enabled
+	}
+	if input.FallbackAccountID != nil {
+		account.FallbackAccountID = *input.FallbackAccountID
 	}
 	if err := h.accounts.update(func(accounts []upstreamAccount) ([]upstreamAccount, error) {
 		for _, existing := range accounts {
@@ -243,6 +266,23 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	defer release()
+	current, ok = h.accounts.find(id)
+	if !ok {
+		http.Error(w, "account not found", http.StatusNotFound)
+		return
+	}
+	if input.FallbackAccountID != nil && *input.FallbackAccountID != current.FallbackAccountID {
+		if !h.validFallbackAccount(current.provider(), *input.FallbackAccountID) {
+			http.Error(w, "fallback must be an enabled official account", http.StatusBadRequest)
+			return
+		}
+		for _, key := range h.store.snapshot() {
+			if keyAccountID(key) == id && ((!key.Revoked && key.AllowOpus) || key.OpusPending > 0) {
+				http.Error(w, "disable Opus on bound keys and reconcile pending Opus before changing fallback", http.StatusConflict)
+				return
+			}
+		}
+	}
 	if input.Token != "" && h.duplicateAccountToken(input.Token, id) {
 		http.Error(w, "account token already exists", http.StatusConflict)
 		return
@@ -276,6 +316,9 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 			if input.EnabledModels != nil {
 				accounts[i].EnabledModels = append([]string(nil), input.EnabledModels...)
 			}
+			if input.FallbackAccountID != nil {
+				accounts[i].FallbackAccountID = *input.FallbackAccountID
+			}
 			updated = accounts[i]
 			return accounts, nil
 		}
@@ -308,6 +351,12 @@ func (h *ManagedHandler) deleteAccount(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	defer release()
+	for _, account := range h.accounts.snapshot() {
+		if account.FallbackAccountID == id {
+			http.Error(w, "account is still configured as a fallback", http.StatusConflict)
+			return
+		}
+	}
 	if len(h.accounts.snapshot()) == 1 {
 		for _, key := range h.store.snapshot() {
 			if !key.Revoked && keyAccountID(key) == poolAccountID {
