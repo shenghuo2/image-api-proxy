@@ -388,19 +388,25 @@ func (h *ManagedHandler) accountCandidatesForJob(k clientKey, path string, cost 
 	available := make([]upstreamAccount, 0, len(accounts))
 	seen := make(map[string]bool)
 	for _, account := range accounts {
-		if account.provider() != providerNewAPI || account.supports(path, cost.Model) && !cost.RequiresOfficial {
-			if !seen[account.ID] {
-				available = append(available, account)
-				seen[account.ID] = true
+		if account.provider() == providerNewAPI {
+			supported := account.supports(path, cost.Model)
+			// Model switches remain permissions for generation, including image operations.
+			if cost.Model != "" && !supported {
+				continue
 			}
-			continue
+			if cost.RequiresOfficial || !supported || cost.Steps > 28 && account.FallbackHighSteps {
+				// This permission covers all generation using the relay's official fallback.
+				if cost.Steps > 28 && !account.FallbackHighSteps {
+					continue
+				}
+				fallback, ok := h.accounts.find(account.FallbackAccountID)
+				if !ok || fallback.Disabled || fallback.provider() != providerNovelAI {
+					continue
+				}
+				account = fallback
+			}
 		}
-		// Model switches remain permissions for generation, including image operations.
-		if cost.Model != "" && !account.supports(path, cost.Model) {
-			continue
-		}
-		if fallback, ok := h.accounts.find(account.FallbackAccountID); ok && !fallback.Disabled && fallback.provider() == providerNovelAI && !seen[fallback.ID] {
-			account = fallback
+		if !seen[account.ID] {
 			available = append(available, account)
 			seen[account.ID] = true
 		}
@@ -662,10 +668,6 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	}
 	if cost.MultiImage && !h.settings.snapshot().AllowMultiImage {
 		http.Error(w, "multi-image disabled in settings", http.StatusPaymentRequired)
-		return
-	}
-	if cost.Steps > 28 && !h.settings.snapshot().AllowHighSteps {
-		http.Error(w, "generation above 28 steps disabled in settings", http.StatusPaymentRequired)
 		return
 	}
 	var current clientKey

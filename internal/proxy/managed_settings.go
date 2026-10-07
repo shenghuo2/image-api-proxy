@@ -12,7 +12,6 @@ import (
 type proxySettings struct {
 	ChargePendingAsSpent bool   `json:"charge_pending_as_spent"`
 	AllowMultiImage      bool   `json:"allow_multi_image"`
-	AllowHighSteps       bool   `json:"allow_high_steps"`
 	ArchiveEnabled       bool   `json:"archive_enabled"`
 	ArchiveDays          int    `json:"archive_retention_days"`
 	ArchiveMaxBytes      int64  `json:"archive_max_bytes"`
@@ -20,7 +19,7 @@ type proxySettings struct {
 }
 
 func defaultProxySettings() proxySettings {
-	return proxySettings{AllowHighSteps: true, ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console"}
+	return proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console"}
 }
 
 func validAdminUIPath(path string) bool {

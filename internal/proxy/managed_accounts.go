@@ -22,6 +22,7 @@ type upstreamAccount struct {
 	Origin            string   `json:"origin,omitempty"`
 	EnabledModels     []string `json:"enabled_models,omitempty"`
 	FallbackAccountID string   `json:"fallback_account_id,omitempty"`
+	FallbackHighSteps bool     `json:"fallback_high_steps,omitempty"`
 }
 
 func (a upstreamAccount) provider() string {

@@ -76,6 +76,7 @@ export interface Account {
   origin?: string
   enabled_models?: string[]
   fallback_account_id?: string
+  fallback_high_steps: boolean
   fallback_reference_count: number
 }
 
@@ -87,6 +88,7 @@ export interface AccountInput {
   origin?: string
   enabled_models?: string[]
   fallback_account_id?: string
+  fallback_high_steps?: boolean
 }
 
 export interface AccountQuota {
@@ -133,7 +135,6 @@ export interface KeyPolicy {
 export interface AdminSettings {
   charge_pending_as_spent: boolean
   allow_multi_image: boolean
-  allow_high_steps: boolean
   archive_enabled: boolean
   archive_retention_days: number
   archive_max_bytes: number

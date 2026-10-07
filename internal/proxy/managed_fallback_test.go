@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -239,11 +240,17 @@ func TestRelayFallbackRoutingAndAccounting(t *testing.T) {
 
 func TestRelayFallbackConfigurationAndPersistence(t *testing.T) {
 	f := newFallbackTestProxy(t, 2)
+	account, _ := f.h.accounts.find(f.relayID)
+	if account.FallbackHighSteps {
+		t.Fatal("official high-step fallback must require explicit permission")
+	}
 	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 100})
 	for _, id := range []string{f.relayID, poolAccountID, "missing"} {
 		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_account_id": id}), http.StatusBadRequest)
 	}
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/default", testAdminKey, map[string]any{"fallback_account_id": f.relayID}), http.StatusBadRequest)
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/default", testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusBadRequest)
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
 	doManaged(t, managedRequest(t, "DELETE", f.url+"/admin/accounts/default", testAdminKey, nil), http.StatusConflict)
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/default", testAdminKey, map[string]any{"enabled": false}), http.StatusOK)
 	image := fallbackTestGeneration("img2img", 12)
@@ -259,11 +266,15 @@ func TestRelayFallbackConfigurationAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	account, _ := restarted.accounts.find(f.relayID)
-	if account.FallbackAccountID != defaultAccountID || restarted.viewAccount(upstreamAccount{ID: defaultAccountID}, nil).FallbackReferenceCount != 1 {
-		t.Fatal("fallback reference was not persisted")
+	account, _ = restarted.accounts.find(f.relayID)
+	if account.FallbackAccountID != defaultAccountID || !account.FallbackHighSteps || restarted.viewAccount(upstreamAccount{ID: defaultAccountID}, nil).FallbackReferenceCount != 1 {
+		t.Fatal("fallback reference and high-step permission were not persisted")
 	}
-	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_account_id": ""}), http.StatusOK)
+	removed := doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_account_id": ""}), http.StatusOK)
+	if removed["fallback_high_steps"] != false {
+		t.Fatal("removing fallback retained high-step permission")
+	}
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusBadRequest)
 	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, image), http.StatusServiceUnavailable)
 	doManaged(t, managedRequest(t, "DELETE", f.url+"/admin/accounts/default", testAdminKey, nil), http.StatusNoContent)
 }
@@ -317,47 +328,268 @@ func TestRelayFallbackOpusPermissionAndAccountShares(t *testing.T) {
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_account_id": ""}), http.StatusOK)
 }
 
-func TestHighStepsPermissionAppliesBeforeRoutingAndToDurableJobs(t *testing.T) {
+func TestRelayHighStepsFallbackRouting(t *testing.T) {
+	f := newFallbackTestProxy(t, 2)
+	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 5000})
+	for _, enabled := range []bool{false, true} {
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
+		for _, steps := range []int{28, 29, 50, 51} {
+			for _, route := range []string{"/ai/generate-image", "/ai/generate-image-stream", "/image/ai/generate-image", "/image/ai/generate-image-stream"} {
+				for _, action := range []string{"generate", "img2img", "enhance"} {
+					body := fallbackTestGeneration(action, steps)
+					before, _ := f.h.store.find(key)
+					count := len(f.snapshot())
+					code := http.StatusOK
+					if steps > 50 {
+						code = http.StatusBadRequest
+					} else if steps > 28 && action != "generate" && !enabled {
+						code = http.StatusServiceUnavailable
+					}
+					f.send(t, managedRequest(t, "POST", f.url+route, key, body), code)
+					if code != http.StatusOK {
+						after, _ := f.h.store.find(key)
+						if len(f.snapshot()) != count || after.FixedSpent != before.FixedSpent || after.FixedPending != before.FixedPending || after.SuccessfulGenerations != before.SuccessfulGenerations {
+							t.Fatalf("blocked request changed usage: enabled=%v steps=%d action=%s route=%s", enabled, steps, action, route)
+						}
+						continue
+					}
+					provider := providerNewAPI
+					if action != "generate" || steps > 28 && enabled {
+						provider = providerNovelAI
+					}
+					calls := f.snapshot()
+					got := calls[len(calls)-1]
+					want, _ := json.Marshal(body)
+					if len(calls) != count+1 || got.provider != provider || got.path != strings.TrimPrefix(route, "/image") || !bytes.Equal(got.body, want) {
+						t.Fatalf("wrong high-step routing: enabled=%v steps=%d action=%s route=%s got=%+v", enabled, steps, action, route, got)
+					}
+				}
+			}
+		}
+	}
+	// Other image-operation markers cannot bypass the high-step permission.
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": false}), http.StatusOK)
+	for _, marker := range []string{"image", "mask", "upscaled_enhance", "inpainting"} {
+		body := fallbackTestGeneration("generate", 29)
+		if marker == "inpainting" {
+			body["model"] = "nai-diffusion-5-full-inpainting"
+		} else if marker == "upscaled_enhance" {
+			body["parameters"].(map[string]any)[marker] = true
+		} else {
+			body["parameters"].(map[string]any)[marker] = "input-image"
+		}
+		count := len(f.snapshot())
+		f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image-stream", key, body), http.StatusServiceUnavailable)
+		if len(f.snapshot()) != count {
+			t.Fatal("image marker bypassed high-step fallback permission")
+		}
+	}
+	// High-step official requests still respect the relay's model switches.
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
+	blocked := fallbackTestGeneration("generate", 29)
+	blocked["model"] = "nai-diffusion-4-5-curated"
+	count := len(f.snapshot())
+	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, blocked), http.StatusServiceUnavailable)
+	if len(f.snapshot()) != count {
+		t.Fatal("high-step fallback bypassed model permission")
+	}
+	allowed := fallbackTestGeneration("generate", 29)
+	allowed["model"] = "nai-diffusion-4-5-full"
+	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image-stream", key, allowed), http.StatusOK)
+}
+
+func TestRelayHighStepsFallbackAccountingAndFailures(t *testing.T) {
+	f := newFallbackTestProxy(t, 3)
+	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
+	body := fallbackTestGeneration("generate", 29)
+	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, body), http.StatusOK)
+	stored, _ := f.h.store.find(key)
+	if stored.FixedSpent != 16 || stored.FixedPending != 0 || stored.FormulaAnlas != 9 || stored.SuccessfulGenerations != 1 || stored.OpusUsed != 0 {
+		t.Fatalf("high steps must use official paid accounting on the original key: %+v", f.h.viewAdminKey(stored))
+	}
+	limited, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 9})
+	count := len(f.snapshot())
+	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", limited, body), http.StatusPaymentRequired)
+	if len(f.snapshot()) != count {
+		t.Fatal("insufficient official reservation reached upstream")
+	}
+	for _, id := range []string{"reject", "uncertain"} {
+		before, _ := f.h.store.find(key)
+		count := len(f.snapshot())
+		req := managedRequest(t, "POST", f.url+"/ai/generate-image-stream", key, body)
+		req.Header.Set("X-Correlation-Id", id)
+		code := http.StatusPaymentRequired
+		if id == "uncertain" {
+			code = http.StatusBadGateway
+		}
+		f.send(t, req, code)
+		after, _ := f.h.store.find(key)
+		charge := int64(0)
+		if id == "uncertain" {
+			charge = 16
+		}
+		if len(f.snapshot()) != count+1 || after.SuccessfulGenerations != before.SuccessfulGenerations || after.FixedSpent != before.FixedSpent+charge || after.FixedPending != before.FixedPending+charge {
+			t.Fatal("high-step failure retried or settled incorrectly")
+		}
+	}
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/default", testAdminKey, map[string]any{"enabled": false}), http.StatusOK)
+	count = len(f.snapshot())
+	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, body), http.StatusServiceUnavailable)
+	if len(f.snapshot()) != count {
+		t.Fatal("disabled official account fell back to relay")
+	}
+}
+
+func TestRelayHighStepsMultipartAndDurableJobs(t *testing.T) {
 	f := newFallbackTestProxy(t, 2)
 	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
-	if !f.h.settings.snapshot().AllowHighSteps {
-		t.Fatal("existing high-step behavior must be retained by default")
-	}
-	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, fallbackTestGeneration("generate", 50)), http.StatusOK)
-	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, fallbackTestGeneration("generate", 51)), http.StatusBadRequest)
-	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/settings", testAdminKey, map[string]any{"allow_high_steps": false}), http.StatusOK)
-	before := len(f.snapshot())
-	for _, route := range []string{"/ai/generate-image", "/ai/generate-image-stream", "/image/ai/generate-image", "/image/ai/generate-image-stream"} {
+	for _, enabled := range []bool{false, true} {
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
 		for _, action := range []string{"generate", "img2img"} {
-			f.send(t, managedRequest(t, "POST", f.url+route, key, fallbackTestGeneration(action, 29)), http.StatusPaymentRequired)
+			count := len(f.snapshot())
+			payload, _ := json.Marshal(fallbackTestGeneration(action, 29))
+			body, contentType := managedMultipartBody(t,
+				multipartPart{name: "request", contentType: "application/json", data: payload},
+				multipartPart{name: "input", contentType: "image/png", data: []byte{0, 128, 255}},
+			)
+			req, _ := http.NewRequest("POST", f.url+"/image/ai/generate-image-stream", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+key)
+			req.Header.Set("Content-Type", contentType)
+			code, provider := http.StatusOK, providerNewAPI
+			if enabled {
+				provider = providerNovelAI
+			} else if action != "generate" {
+				code = http.StatusServiceUnavailable
+			}
+			f.send(t, req, code)
+			if code == http.StatusOK {
+				calls := f.snapshot()
+				got := calls[len(calls)-1]
+				if len(calls) != count+1 || got.provider != provider || got.path != "/ai/generate-image-stream" || !bytes.Equal(got.body, body) || got.contentType != contentType {
+					t.Fatal("high-step multipart body or stream path changed")
+				}
+			} else if len(f.snapshot()) != count {
+				t.Fatal("multipart bypassed fallback permission")
+			}
+			count = len(f.snapshot())
+			before, _ := f.h.store.find(key)
+			job := doManaged(t, managedRequest(t, "POST", f.url+"/jobs/ai/generate-image", key, fallbackTestGeneration(action, 29)), http.StatusAccepted)
+			deadline := time.Now().Add(2 * time.Second)
+			var status map[string]any
+			for {
+				status = doManaged(t, managedRequest(t, "GET", f.url+"/jobs/"+job["id"].(string), key, nil), http.StatusOK)
+				if status["state"] == "done" || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if status["state"] != "done" || status["upstream_status"] != float64(code) {
+				t.Fatalf("durable job did not apply account high-step policy: %v", status)
+			}
+			if code == http.StatusOK {
+				calls := f.snapshot()
+				got := calls[len(calls)-1]
+				if len(calls) != count+1 || got.provider != provider || got.path != "/ai/generate-image" || !bytes.Equal(got.body, payload) {
+					t.Fatal("durable job changed high-step routing or body")
+				}
+			} else {
+				after, _ := f.h.store.find(key)
+				if len(f.snapshot()) != count || after.FixedSpent != before.FixedSpent || after.SuccessfulGenerations != before.SuccessfulGenerations {
+					t.Fatal("blocked durable job changed accounting")
+				}
+			}
 		}
 	}
-	payload, _ := json.Marshal(fallbackTestGeneration("img2img", 29))
-	body, contentType := managedMultipartBody(t, multipartPart{name: "request", contentType: "application/json", data: payload})
-	req, _ := http.NewRequest("POST", f.url+"/ai/generate-image-stream", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", contentType)
-	f.send(t, req, http.StatusPaymentRequired)
-	job := doManaged(t, managedRequest(t, "POST", f.url+"/jobs/ai/generate-image", key, fallbackTestGeneration("img2img", 29)), http.StatusAccepted)
-	deadline := time.Now().Add(2 * time.Second)
-	var status map[string]any
-	for {
-		status = doManaged(t, managedRequest(t, "GET", f.url+"/jobs/"+job["id"].(string), key, nil), http.StatusOK)
-		if status["state"] == "done" || time.Now().After(deadline) {
-			break
+}
+
+func TestRelayHighStepsFallbackIsPerAccount(t *testing.T) {
+	f := newFallbackTestProxy(t, 3)
+	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
+	var secondCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer second-relay-token-0123456789" {
+			t.Error("wrong second relay credential")
 		}
-		time.Sleep(10 * time.Millisecond)
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(archiveTestPNG(color.RGBA{A: 255}))
+	}))
+	t.Cleanup(second.Close)
+	input := map[string]any{"name": "second relay", "provider": providerNewAPI, "origin": second.URL,
+		"token": "second-relay-token-0123456789", "enabled_models": []string{"nai-diffusion-5-full"}, "fallback_high_steps": true}
+	// Enabling this permission requires a configured, enabled official target.
+	doManaged(t, managedRequest(t, "POST", f.url+"/admin/accounts", testAdminKey, input), http.StatusBadRequest)
+	input["fallback_account_id"] = defaultAccountID
+	account := doManaged(t, managedRequest(t, "POST", f.url+"/admin/accounts", testAdminKey, input), http.StatusCreated)
+	if account["fallback_high_steps"] != true {
+		t.Fatal("creation did not save high-step fallback permission")
 	}
-	if status["state"] != "done" || status["upstream_status"] != float64(http.StatusPaymentRequired) || len(f.snapshot()) != before {
-		t.Fatalf("high steps bypassed restriction: job=%v calls=%d", status, len(f.snapshot()))
+	secondID := account["id"].(string)
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+secondID, testAdminKey, map[string]any{"fallback_high_steps": false}), http.StatusOK)
+	secondKey := doManaged(t, managedRequest(t, "POST", f.url+"/admin/keys", testAdminKey, map[string]any{
+		"name": "second device", "account_id": secondID, "allow_fixed_anlas": true, "fixed_anlas_limit": 1000,
+	}), http.StatusCreated)["key"].(string)
+	officialKey := doManaged(t, managedRequest(t, "POST", f.url+"/admin/keys", testAdminKey, map[string]any{
+		"name": "official device", "account_id": defaultAccountID, "allow_fixed_anlas": true, "fixed_anlas_limit": 1000,
+	}), http.StatusCreated)["key"].(string)
+	for _, enabled := range []bool{true, false} {
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
+		f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, fallbackTestGeneration("generate", 29)), http.StatusOK)
+		calls := f.snapshot()
+		provider := providerNewAPI
+		if enabled {
+			provider = providerNovelAI
+		}
+		if calls[len(calls)-1].provider != provider {
+			t.Fatal("first account ignored its high-step permission")
+		}
+		count := secondCalls.Load()
+		f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image-stream", secondKey, fallbackTestGeneration("generate", 29)), http.StatusOK)
+		if secondCalls.Load() != count+1 {
+			t.Fatal("first relay's permission affected the second relay")
+		}
+		f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", officialKey, fallbackTestGeneration("generate", 50)), http.StatusOK)
+		calls = f.snapshot()
+		if calls[len(calls)-1].provider != providerNovelAI {
+			t.Fatal("relay permission affected a directly bound official key")
+		}
 	}
-	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, fallbackTestGeneration("generate", 28)), http.StatusOK)
-	stored, _ := f.h.store.find(key)
-	if stored.SuccessfulGenerations != 2 || stored.FixedPending != 0 {
-		t.Fatal("blocked high-step requests changed accounting")
+	// The same official target appears once when both directly pooled and a fallback.
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
+	cost := jobCost{Model: "nai-diffusion-5-full", Steps: 29}
+	candidates := f.h.accountCandidatesForJob(clientKey{AccountID: poolAccountID}, "/ai/generate-image", cost)
+	if len(candidates) != 2 || candidates[0].ID == candidates[1].ID {
+		t.Fatal("pool duplicated the official high-step fallback")
 	}
-	restarted, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: f.state})
-	if err != nil || restarted.settings.snapshot().AllowHighSteps {
-		t.Fatalf("high-step switch did not persist: %v", err)
+}
+
+func TestLegacyGlobalHighStepsSettingDoesNotAuthorizeFallback(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		f := newFallbackTestProxy(t, 2)
+		data, _ := json.Marshal(f.h.settings.snapshot())
+		var settings map[string]any
+		_ = json.Unmarshal(data, &settings)
+		settings["allow_high_steps"] = enabled
+		data, _ = json.Marshal(settings)
+		if _, err := f.h.store.db.db.Exec("UPDATE settings SET data=? WHERE id=1", data); err != nil {
+			t.Fatal(err)
+		}
+		restarted, err := NewManaged(ManagedConfig{AdminKey: testAdminKey, StatePath: f.state})
+		if err != nil {
+			t.Fatal(err)
+		}
+		account, _ := restarted.accounts.find(f.relayID)
+		if account.FallbackHighSteps || account.FallbackAccountID != defaultAccountID {
+			t.Fatal("legacy global setting changed fallback permissions")
+		}
+		data, _ = json.Marshal(restarted.settings.snapshot())
+		if bytes.Contains(data, []byte("allow_high_steps")) {
+			t.Fatal("obsolete global step limit still exposed")
+		}
+		candidates := restarted.accountCandidatesForJob(clientKey{AccountID: f.relayID}, "/ai/generate-image", jobCost{Model: "nai-diffusion-5-full", Steps: 50})
+		if len(candidates) != 1 || candidates[0].ID != f.relayID {
+			t.Fatal("legacy global step limit changed default relay routing")
+		}
 	}
 }

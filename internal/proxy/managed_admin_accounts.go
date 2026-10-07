@@ -18,6 +18,7 @@ type publicAccount struct {
 	Origin                 string   `json:"origin,omitempty"`
 	EnabledModels          []string `json:"enabled_models,omitempty"`
 	FallbackAccountID      string   `json:"fallback_account_id,omitempty"`
+	FallbackHighSteps      bool     `json:"fallback_high_steps"`
 	FallbackReferenceCount int      `json:"fallback_reference_count"`
 }
 
@@ -29,12 +30,14 @@ type accountInput struct {
 	Origin            *string  `json:"origin"`
 	EnabledModels     []string `json:"enabled_models"`
 	FallbackAccountID *string  `json:"fallback_account_id"`
+	FallbackHighSteps *bool    `json:"fallback_high_steps"`
 }
 
 func (h *ManagedHandler) viewAccount(account upstreamAccount, keys []clientKey) publicAccount {
 	_, err := h.vault.open(account.TokenCiphertext)
 	view := publicAccount{ID: account.ID, Name: account.Name, Enabled: !account.Disabled, TokenConfigured: err == nil,
-		Provider: account.provider(), Origin: account.Origin, EnabledModels: account.EnabledModels, FallbackAccountID: account.FallbackAccountID}
+		Provider: account.provider(), Origin: account.Origin, EnabledModels: account.EnabledModels,
+		FallbackAccountID: account.FallbackAccountID, FallbackHighSteps: account.FallbackHighSteps}
 	for _, source := range h.accounts.snapshot() {
 		if source.FallbackAccountID == account.ID {
 			view.FallbackReferenceCount++
@@ -217,6 +220,13 @@ func (h *ManagedHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 	if input.FallbackAccountID != nil {
 		account.FallbackAccountID = *input.FallbackAccountID
 	}
+	if input.FallbackHighSteps != nil {
+		account.FallbackHighSteps = *input.FallbackHighSteps
+	}
+	if account.FallbackHighSteps && (account.FallbackAccountID == "" || !h.validFallbackAccount(account.provider(), account.FallbackAccountID)) {
+		http.Error(w, "high-step fallback requires an enabled official fallback account", http.StatusBadRequest)
+		return
+	}
 	if err := h.accounts.update(func(accounts []upstreamAccount) ([]upstreamAccount, error) {
 		for _, existing := range accounts {
 			if existing.ID == id {
@@ -271,6 +281,20 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "account not found", http.StatusNotFound)
 		return
 	}
+	fallbackAccountID, fallbackHighSteps := current.FallbackAccountID, current.FallbackHighSteps
+	if input.FallbackAccountID != nil {
+		fallbackAccountID = *input.FallbackAccountID
+	}
+	if input.FallbackHighSteps != nil {
+		fallbackHighSteps = *input.FallbackHighSteps
+	} else if fallbackAccountID == "" {
+		fallbackHighSteps = false
+	}
+	if fallbackHighSteps && (current.provider() != providerNewAPI || fallbackAccountID == "" ||
+		((!current.FallbackHighSteps || fallbackAccountID != current.FallbackAccountID) && !h.validFallbackAccount(current.provider(), fallbackAccountID))) {
+		http.Error(w, "high-step fallback requires an enabled official fallback account", http.StatusBadRequest)
+		return
+	}
 	if input.FallbackAccountID != nil && *input.FallbackAccountID != current.FallbackAccountID {
 		if !h.validFallbackAccount(current.provider(), *input.FallbackAccountID) {
 			http.Error(w, "fallback must be an enabled official account", http.StatusBadRequest)
@@ -316,9 +340,8 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 			if input.EnabledModels != nil {
 				accounts[i].EnabledModels = append([]string(nil), input.EnabledModels...)
 			}
-			if input.FallbackAccountID != nil {
-				accounts[i].FallbackAccountID = *input.FallbackAccountID
-			}
+			accounts[i].FallbackAccountID = fallbackAccountID
+			accounts[i].FallbackHighSteps = fallbackHighSteps
 			updated = accounts[i]
 			return accounts, nil
 		}
