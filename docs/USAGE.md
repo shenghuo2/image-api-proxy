@@ -27,12 +27,12 @@ docker run -d --name novelai-api-proxy --restart unless-stopped \
   -e PROXY_STATE_PATH=/data/keys.json \
   -v novelai-proxy-data:/data \
   -p 127.0.0.1:8787:8787 \
-  shenghuo2/novelai-api-proxy:v0.1.3
+  shenghuo2/novelai-api-proxy:v0.1.4
 ```
 
 ## 访问与升级
 
-镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.3`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
+镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.4`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
 
 升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
 
