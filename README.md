@@ -25,13 +25,15 @@
 | 数据存储 | 本机持久化卷 | SQLite Durable Object |
 | 成本 | VPS 费用 | Free 套餐可用，具体用量见部署教程 |
 | 适合谁 | 长期使用、需要图库、希望自主控制出口 | 轻量使用、无需图库、希望快速部署 |
-| 源码分支 | `main` | `feat/cloudflare-workers` |
+| 源码分支 | `feature/new-api-upstream-accounts` | `feat/cloudflare-workers` |
 
 两个版本独立维护，运行数据不自动互迁。NovelAI 订阅和生成费用均另计。
 
 ## 部署
 
 ### Docker / VPS（推荐）
+
+本分支镜像为 `shenghuo2/novelai-api-proxy:v0.1.4-relay-compat`，在主线版本基础上提供 New API 中转站兼容。
 
 按 [Docker 部署教程](docs/USAGE.md) 安装并启动。教程包含 Docker Compose、单容器、持久化存储、HTTPS 反向代理及升级说明。
 

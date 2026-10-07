@@ -7,7 +7,7 @@
 可使用 Docker Compose 一起构建 Go 后端和管理面板。用 `openssl rand -hex 32` 生成管理员密钥；将 `.env.example` 复制为 `.env`，设置 `PROXY_ADMIN_KEY`。可选的 `PROXY_NAI_TOKEN` 仅在首次启动时导入为默认账号；其后在管理面板添加或更换 Token。若暂未配置任何账号，仍可登录管理面板；官方额度查询及生成操作会不可用。不要把 `.env` 或 Token 提交到仓库。
 
 ```bash
-git clone --branch main https://github.com/shenghuo2/image-api-proxy.git
+git clone --branch feature/new-api-upstream-accounts https://github.com/shenghuo2/image-api-proxy.git
 cd image-api-proxy
 cp .env.example .env
 # 编辑 .env，填写自己的 PROXY_ADMIN_KEY
@@ -27,12 +27,14 @@ docker run -d --name novelai-api-proxy --restart unless-stopped \
   -e PROXY_STATE_PATH=/data/keys.json \
   -v novelai-proxy-data:/data \
   -p 127.0.0.1:8787:8787 \
-  shenghuo2/novelai-api-proxy:v0.1.4
+  shenghuo2/novelai-api-proxy:v0.1.4-relay-compat
 ```
 
 ## 访问与升级
 
-镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.4`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
+本分支的兼容中转站镜像使用 `vX.Y.Z-relay-compat` 标签，与对应主线版本共用基础版本号。当前版本为 `v0.1.4-relay-compat`，包含主线修复及 New API 账号支持。
+
+镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.4-relay-compat`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
 
 升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
 
