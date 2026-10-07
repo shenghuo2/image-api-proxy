@@ -10,43 +10,46 @@ import (
 )
 
 type publicKey struct {
-	ID                   string           `json:"id"`
-	Name                 string           `json:"name"`
-	AccountID            string           `json:"account_id"`
-	AccountName          string           `json:"account_name,omitempty"`
-	AllowFixed           bool             `json:"allow_fixed_anlas"`
-	FixedLimit           int64            `json:"fixed_anlas_limit"`
-	FixedSpent           int64            `json:"fixed_anlas_spent"`
-	FixedPending         int64            `json:"fixed_anlas_pending"`
-	FixedRemaining       int64            `json:"fixed_anlas_remaining"`
-	AllowPurchased       bool             `json:"allow_purchased_anlas"`
-	PurchasedLimit       int64            `json:"purchased_anlas_limit"`
-	PurchasedSpent       int64            `json:"purchased_anlas_spent"`
-	PurchasedPending     int64            `json:"purchased_anlas_pending"`
-	PurchasedRemaining   int64            `json:"purchased_anlas_remaining"`
-	AllowOpus            bool             `json:"allow_opus"`
-	AllowMultiImage      bool             `json:"allow_multi_image"`
-	ArchiveEnabled       bool             `json:"archive_enabled"`
-	OpusLimitMode        string           `json:"opus_limit_mode"`
-	OpusLimitPercent     float64          `json:"opus_limit_percent"`
-	OpusLimit            int64            `json:"opus_limit_images"`
-	OpusEffectiveLimit   int64            `json:"opus_effective_limit_images"`
-	OpusUsed             int64            `json:"opus_used_images"`
-	OpusPending          int64            `json:"opus_pending_images"`
-	OpusRemaining        int64            `json:"opus_remaining_images"`
-	OpusPredicted        bool             `json:"opus_predicted"`
-	OpusConfirmedAt      *time.Time       `json:"opus_confirmed_at,omitempty"`
-	OpusPendingByAccount map[string]int64 `json:"opus_pending_by_account,omitempty"`
-	OpusShareWarning     bool             `json:"opus_share_warning"`
-	QueueLimit           int              `json:"queue_limit"`
-	AllocatedAnlas       int64            `json:"allocated_anlas"`
-	SpentAnlas           int64            `json:"spent_anlas"`
-	PendingAnlas         int64            `json:"pending_anlas"`
-	RemainingAnlas       int64            `json:"remaining_anlas"`
-	QueueLength          int              `json:"queue_length"`
-	KeyQueueLength       int              `json:"key_queue_length"`
-	Revoked              bool             `json:"revoked"`
-	Key                  string           `json:"key,omitempty"`
+	ID                    string           `json:"id"`
+	Name                  string           `json:"name"`
+	AccountID             string           `json:"account_id"`
+	AccountName           string           `json:"account_name,omitempty"`
+	AllowFixed            bool             `json:"allow_fixed_anlas"`
+	FixedLimit            int64            `json:"fixed_anlas_limit"`
+	FixedSpent            int64            `json:"fixed_anlas_spent"`
+	FixedPending          int64            `json:"fixed_anlas_pending"`
+	FixedRemaining        int64            `json:"fixed_anlas_remaining"`
+	AllowPurchased        bool             `json:"allow_purchased_anlas"`
+	PurchasedLimit        int64            `json:"purchased_anlas_limit"`
+	PurchasedSpent        int64            `json:"purchased_anlas_spent"`
+	PurchasedPending      int64            `json:"purchased_anlas_pending"`
+	PurchasedRemaining    int64            `json:"purchased_anlas_remaining"`
+	AllowOpus             bool             `json:"allow_opus"`
+	AllowMultiImage       bool             `json:"allow_multi_image"`
+	ArchiveEnabled        bool             `json:"archive_enabled"`
+	OpusLimitMode         string           `json:"opus_limit_mode"`
+	OpusLimitPercent      float64          `json:"opus_limit_percent"`
+	OpusLimit             int64            `json:"opus_limit_images"`
+	OpusEffectiveLimit    int64            `json:"opus_effective_limit_images"`
+	OpusUsed              int64            `json:"opus_used_images"`
+	OpusPending           int64            `json:"opus_pending_images"`
+	OpusRemaining         int64            `json:"opus_remaining_images"`
+	OpusPredicted         bool             `json:"opus_predicted"`
+	OpusConfirmedAt       *time.Time       `json:"opus_confirmed_at,omitempty"`
+	OpusPendingByAccount  map[string]int64 `json:"opus_pending_by_account,omitempty"`
+	OpusShareWarning      bool             `json:"opus_share_warning"`
+	SuccessfulGenerations int64            `json:"successful_generations"`
+	SuccessfulImages      int64            `json:"successful_images"`
+	FormulaAnlas          int64            `json:"formula_anlas"`
+	QueueLimit            int              `json:"queue_limit"`
+	AllocatedAnlas        int64            `json:"allocated_anlas"`
+	SpentAnlas            int64            `json:"spent_anlas"`
+	PendingAnlas          int64            `json:"pending_anlas"`
+	RemainingAnlas        int64            `json:"remaining_anlas"`
+	QueueLength           int              `json:"queue_length"`
+	KeyQueueLength        int              `json:"key_queue_length"`
+	Revoked               bool             `json:"revoked"`
+	Key                   string           `json:"key,omitempty"`
 }
 
 func viewKey(k clientKey) publicKey {
@@ -60,6 +63,7 @@ func viewKey(k clientKey) publicKey {
 		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, ArchiveEnabled: !k.ArchiveDisabled, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
 		OpusLimitMode: opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
 		OpusPending: k.OpusPending, OpusRemaining: displayRemaining(opusRemaining(k)),
+		SuccessfulGenerations: k.SuccessfulGenerations, SuccessfulImages: k.SuccessfulImages, FormulaAnlas: k.FormulaAnlas,
 		QueueLimit:     keyQueueLimit(k),
 		AllocatedAnlas: allocatedAnlas(k),
 		SpentAnlas:     k.FixedSpent + k.PurchasedSpent,
@@ -271,6 +275,7 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 	accountQuotas := make([]map[string]any, 0, len(accounts))
 	accountErrors := make([]map[string]string, 0)
 	var fixedAllocated, purchasedAllocated int64
+	var unknownAccounts, knownAccounts int
 	for _, account := range accounts {
 		if account.Disabled {
 			continue
@@ -281,6 +286,11 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 			continue
 		}
 		accountQuotas = append(accountQuotas, accountQuotaView(account, current, keys))
+		if current.UnknownBalance {
+			unknownAccounts++
+			continue
+		}
+		knownAccounts++
 		fixed, purchased := totalRemainingForAccount(keys, account.ID)
 		fixedAllocated += fixed
 		purchasedAllocated += purchased
@@ -306,14 +316,30 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
 		return
 	}
+	if q.Refreshed.IsZero() {
+		q.Refreshed = time.Now()
+	}
 	poolFixed, poolPurchased := totalRemainingForPool(keys)
-	fixedAllocated += poolFixed
-	purchasedAllocated += poolPurchased
+	var unattributedPoolFixed, unattributedPoolPurchased int64
+	if unknownAccounts == 0 {
+		fixedAllocated += poolFixed
+		purchasedAllocated += poolPurchased
+	} else {
+		unattributedPoolFixed, unattributedPoolPurchased = poolFixed, poolPurchased
+	}
 	q.Official.OpusPercent = min(100, q.Official.OpusPercent)
 	var unlimitedFixed, unlimitedPurchased, unlimitedOpus int
 	for _, key := range keys {
 		if key.Revoked {
 			continue
+		}
+		if accountID := keyAccountID(key); unknownAccounts > 0 {
+			if accountID == poolAccountID {
+				continue
+			}
+			if account, ok := h.accounts.find(accountID); ok && account.provider() == providerNewAPI {
+				continue
+			}
 		}
 		if key.AllowFixed && key.FixedLimit == -1 {
 			unlimitedFixed++
@@ -326,7 +352,10 @@ func (h *ManagedHandler) serveAdminQuota(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	jsonReply(w, http.StatusOK, map[string]any{
-		"upstream_fixed_anlas": q.Official.Fixed, "upstream_purchased_anlas": q.Official.Purchased,
+		"known_account_count": knownAccounts, "unknown_balance_account_count": unknownAccounts,
+		"unattributed_pool_fixed_anlas":     unattributedPoolFixed,
+		"unattributed_pool_purchased_anlas": unattributedPoolPurchased,
+		"upstream_fixed_anlas":              q.Official.Fixed, "upstream_purchased_anlas": q.Official.Purchased,
 		"upstream_anlas":        q.Official.Fixed + q.Official.Purchased,
 		"projected_fixed_anlas": q.Fixed, "projected_purchased_anlas": q.Purchased,
 		"allocated_fixed_anlas": fixedAllocated, "allocated_purchased_anlas": purchasedAllocated,
@@ -358,6 +387,10 @@ func (h *ManagedHandler) createKey(w http.ResponseWriter, r *http.Request, input
 	}
 	if err := applyPolicy(&key, input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if account, ok := h.accounts.find(key.AccountID); ok && account.provider() == providerNewAPI && key.AllowOpus {
+		http.Error(w, "Opus is unavailable for New API accounts", http.StatusBadRequest)
 		return
 	}
 	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
@@ -488,6 +521,9 @@ func (h *ManagedHandler) setPolicy(w http.ResponseWriter, r *http.Request, id st
 				wasOpusMode := opusMode(keys[i])
 				if err := applyPolicy(&keys[i], input); err != nil {
 					return nil, err
+				}
+				if account, ok := h.accounts.find(keyAccountID(keys[i])); ok && account.provider() == providerNewAPI && keys[i].AllowOpus {
+					return nil, errors.New("Opus is unavailable for New API accounts")
 				}
 				if !keys[i].AllowOpus || (wasOpusMode == "percent" && opusMode(keys[i]) != "percent") {
 					for accountID, bucket := range keys[i].OpusBuckets {

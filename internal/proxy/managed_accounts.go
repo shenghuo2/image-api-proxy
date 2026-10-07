@@ -10,12 +10,70 @@ import (
 
 const defaultAccountID = "default"
 const poolAccountID = "pool"
+const providerNovelAI = "novelai"
+const providerNewAPI = "new_api"
 
 type upstreamAccount struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	TokenCiphertext string `json:"token_ciphertext"`
-	Disabled        bool   `json:"disabled"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	TokenCiphertext string   `json:"token_ciphertext"`
+	Disabled        bool     `json:"disabled"`
+	Provider        string   `json:"provider,omitempty"`
+	Origin          string   `json:"origin,omitempty"`
+	EnabledModels   []string `json:"enabled_models,omitempty"`
+}
+
+func (a upstreamAccount) provider() string {
+	if a.Provider == providerNewAPI {
+		return providerNewAPI
+	}
+	return providerNovelAI
+}
+
+var newAPIModels = []string{
+	"nai-diffusion-4-5-full", "nai-diffusion-4-5-curated",
+	"nai-diffusion-5-full", "nai-diffusion-5-curated",
+}
+
+func validNewAPIModels(models []string) bool {
+	if len(models) == 0 || len(models) > len(newAPIModels) {
+		return false
+	}
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		valid := false
+		for _, allowed := range newAPIModels {
+			if model == allowed {
+				valid = true
+				break
+			}
+		}
+		if !valid || seen[model] {
+			return false
+		}
+		seen[model] = true
+	}
+	return true
+}
+
+func (a upstreamAccount) supports(path, model string) bool {
+	if a.provider() != providerNewAPI {
+		return true
+	}
+	if path != "/ai/generate-image" && path != "/ai/generate-image-stream" &&
+		path != "/image/ai/generate-image" && path != "/image/ai/generate-image-stream" {
+		return false
+	}
+	base := model
+	if len(base) > len("-inpainting") && base[len(base)-len("-inpainting"):] == "-inpainting" {
+		base = base[:len(base)-len("-inpainting")]
+	}
+	for _, enabled := range a.EnabledModels {
+		if base == enabled {
+			return true
+		}
+	}
+	return false
 }
 
 type accountStore struct {

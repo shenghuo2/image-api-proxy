@@ -90,6 +90,10 @@ func TestGenerationHoursWithoutArchive(t *testing.T) {
 		}
 	}
 	check(h)
+	keyUsage := doManaged(t, managedRequest(t, http.MethodGet, server.URL+"/quota", key, nil), http.StatusOK)
+	if keyUsage["successful_generations"] != float64(3) || keyUsage["successful_images"] != float64(3) || keyUsage["formula_anlas"] != float64(9) {
+		t.Fatalf("per-key successful usage: %v", keyUsage)
+	}
 	unauthorized := httptest.NewRecorder()
 	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, query, nil))
 	if unauthorized.Code != http.StatusUnauthorized {

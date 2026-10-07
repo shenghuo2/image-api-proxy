@@ -53,6 +53,7 @@ type ManagedHandler struct {
 	waiting          []*ticket
 	active           *ticket
 	client           *http.Client
+	transport        http.RoundTripper
 	imageURL         *url.URL
 	image            *httputil.ReverseProxy
 	quotaTTL         time.Duration
@@ -163,6 +164,7 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		jobStaging:       make(chan struct{}, 4),
 		queueSize:        cfg.QueueSize,
 		client:           &http.Client{Transport: transport, Timeout: 25 * time.Second},
+		transport:        transport,
 		imageURL:         imageURL,
 		image:            newReverseProxy(imageURL, "/image", transport),
 		quotaTTL:         cfg.QuotaTTL,
@@ -283,6 +285,7 @@ type upstreamQuota struct {
 
 type quotaSnapshot struct {
 	Official             upstreamQuota
+	UnknownBalance       bool
 	Fixed                int64
 	Purchased            int64
 	OpusJobsSinceRefresh int64
@@ -304,9 +307,17 @@ func (q *quotaSnapshot) projectedOpusPercent() float64 {
 
 // currentQuota is called only while the FIFO worker owns the request.
 func (h *ManagedHandler) currentQuota(ctx context.Context, accountID string, force bool) (*quotaSnapshot, error) {
-	token, err := h.accountToken(accountID)
+	account, ok := h.accounts.find(accountID)
+	if !ok || account.Disabled {
+		return nil, errors.New("upstream account unavailable")
+	}
+	token, err := h.vault.open(account.TokenCiphertext)
 	if err != nil {
 		return nil, err
+	}
+	if account.provider() == providerNewAPI {
+		return &quotaSnapshot{UnknownBalance: true,
+			Official: upstreamQuota{Active: true, Tier: 3}, Refreshed: time.Now()}, nil
 	}
 	now := time.Now()
 	if q := h.quotas[accountID]; q != nil && now.Sub(q.Refreshed) < h.quotaTTL && !force {
@@ -367,6 +378,17 @@ func (h *ManagedHandler) accountCandidates(k clientKey) []upstreamAccount {
 	return available
 }
 
+func (h *ManagedHandler) accountCandidatesForJob(k clientKey, path, model string) []upstreamAccount {
+	accounts := h.accountCandidates(k)
+	available := make([]upstreamAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.supports(path, model) {
+			available = append(available, account)
+		}
+	}
+	return available
+}
+
 // Pool views combine projected balances while the job itself uses one account.
 func (h *ManagedHandler) quotaForKey(ctx context.Context, k clientKey) (*quotaSnapshot, error) {
 	accounts := h.accountCandidates(k)
@@ -383,6 +405,10 @@ func (h *ManagedHandler) quotaForKey(ctx context.Context, k clientKey) (*quotaSn
 		q, err := h.currentQuota(ctx, account.ID, false)
 		if err != nil {
 			firstErr = err
+			continue
+		}
+		if q.UnknownBalance {
+			combined.UnknownBalance = true
 			continue
 		}
 		combined.Fixed += q.Fixed
@@ -409,6 +435,12 @@ func (h *ManagedHandler) quotaForKey(ctx context.Context, k clientKey) (*quotaSn
 		}
 	}
 	if combined.Refreshed.IsZero() {
+		if combined.UnknownBalance {
+			combined.Refreshed = time.Now()
+			combined.Official.Active = true
+			combined.Official.Tier = 3
+			return combined, nil
+		}
 		return nil, firstErr
 	}
 	combined.Official.OpusPercent = min(100, combined.Official.OpusPercent)
@@ -510,14 +542,22 @@ func (h *ManagedHandler) serveSubscription(w http.ResponseWriter, r *http.Reques
 	}
 	for _, latest := range h.store.snapshot() {
 		if latest.ID == key.ID && latest.Hash == current.Hash && !latest.Revoked {
+			fixed, purchased := min(fixedRemaining(latest), q.Fixed), min(purchasedRemaining(latest), q.Purchased)
+			balanceSource := "upstream_projection"
+			if q.UnknownBalance {
+				fixed = min(fixedRemaining(latest), 10000)
+				purchased = min(purchasedRemaining(latest), 10000-fixed)
+				balanceSource = "local_budget_upstream_unknown"
+			}
 			jsonReply(w, http.StatusOK, map[string]any{
 				"active": q.Official.Active, "isGracePeriod": q.Official.Grace,
 				"tier": q.Official.Tier,
 				"trainingStepsLeft": map[string]int64{
-					"fixedTrainingStepsLeft": min(fixedRemaining(latest), q.Fixed),
-					"purchasedTrainingSteps": min(purchasedRemaining(latest), q.Purchased),
+					"fixedTrainingStepsLeft": fixed,
+					"purchasedTrainingSteps": purchased,
 				},
-				"usage": projectedUsage(q, h.opusRemainingForSubscription(latest)),
+				"usage":          projectedUsage(q, h.opusRemainingForSubscription(latest)),
+				"balance_source": balanceSource,
 			})
 			return
 		}
@@ -591,9 +631,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		http.Error(w, "multi-image unavailable for key", http.StatusPaymentRequired)
 		return
 	}
-	accounts := h.accountCandidates(current)
+	accounts := h.accountCandidatesForJob(current, selected.path, cost.Model)
 	if len(accounts) == 0 {
-		http.Error(w, "no enabled upstream account", http.StatusServiceUnavailable)
+		http.Error(w, "no enabled upstream account supports this route and model", http.StatusServiceUnavailable)
 		return
 	}
 	start := 0
@@ -644,8 +684,10 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	if q == nil {
 		if quotaErr != nil {
 			http.Error(w, "upstream quota unavailable", http.StatusBadGateway)
-		} else {
+		} else if reservationErr != nil {
 			http.Error(w, reservationErr.Error(), http.StatusPaymentRequired)
+		} else {
+			http.Error(w, "upstream account unavailable", http.StatusServiceUnavailable)
 		}
 		return
 	}
@@ -653,6 +695,15 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	if err != nil {
 		http.Error(w, "upstream account unavailable", http.StatusBadGateway)
 		return
+	}
+	imageProxy := h.image
+	if selectedAccount.provider() == providerNewAPI {
+		origin, err := parseUpstream(selectedAccount.Origin)
+		if err != nil {
+			http.Error(w, "upstream origin unavailable", http.StatusBadGateway)
+			return
+		}
+		imageProxy = newReverseProxy(origin, "/image", h.transport)
 	}
 	var projectedOpus *float64
 	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
@@ -701,8 +752,10 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		http.Error(w, err.Error(), http.StatusPaymentRequired)
 		return
 	}
-	q.Fixed -= hold.Fixed
-	q.Purchased -= hold.Purchased
+	if !q.UnknownBalance {
+		q.Fixed -= hold.Fixed
+		q.Purchased -= hold.Purchased
+	}
 	if projectedOpus != nil {
 		q.OpusProjected = projectedOpus
 	} else if cost.V5 {
@@ -727,9 +780,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	}
 	if capture != nil {
 		defer func() { _ = capture.file.Close(); _ = os.Remove(capture.file.Name()) }()
-		h.image.ServeHTTP(capture, upstreamRequest)
+		imageProxy.ServeHTTP(capture, upstreamRequest)
 	} else {
-		h.image.ServeHTTP(tracked, upstreamRequest)
+		imageProxy.ServeHTTP(tracked, upstreamRequest)
 	}
 	if capture != nil {
 		id, idErr := randomHex(16)
@@ -747,6 +800,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		return // The upstream outcome is uncertain; keep the reservation pending.
 	}
 	refund := tracked.status >= 400
+	generated := !refund && cost.Samples > 0 && tracked.bodyBytes > 0 && tracked.generatedImage()
 	projectedOpus = nil
 	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		for i := range keys {
@@ -777,21 +831,28 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 					keys[i].PurchasedSpent -= hold.Purchased
 					keys[i].OpusUsed -= hold.Opus
 				}
+				if generated {
+					keys[i].SuccessfulGenerations++
+					keys[i].SuccessfulImages += int64(cost.Samples)
+					keys[i].FormulaAnlas += cost.FormulaAnlas
+				}
 				break
 			}
 		}
 		return keys, nil
 	})
 	if err == nil && refund {
-		q.Fixed += hold.Fixed
-		q.Purchased += hold.Purchased
+		if !q.UnknownBalance {
+			q.Fixed += hold.Fixed
+			q.Purchased += hold.Purchased
+		}
 		if projectedOpus != nil {
 			q.OpusProjected = projectedOpus
 		} else if cost.V5 {
 			q.OpusJobsSinceRefresh -= hold.Opus
 		}
 	}
-	if err == nil && !refund && cost.Samples > 0 && tracked.bodyBytes > 0 && tracked.generatedImage() {
+	if err == nil && generated {
 		if saveErr := h.db.recordGeneration(time.Now(), cost.Samples); saveErr != nil {
 			slog.Warn("generation activity unavailable", "error", saveErr)
 		}

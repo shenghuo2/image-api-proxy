@@ -13,6 +13,8 @@ import (
 
 type jobCost struct {
 	Full         int64
+	FormulaAnlas int64
+	Model        string
 	Extras       int64
 	OpusEligible bool
 	V5           bool
@@ -91,6 +93,8 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 	singleImageHold := int64(math.Ceil((base+float64(extra))*1.2)) + 5
 	return jobCost{
 		Full:         singleImageHold * int64(p.Samples),
+		FormulaAnlas: int64(base+float64(extra)) * int64(p.Samples),
+		Model:        payload.Model,
 		Extras:       extraHold,
 		OpusEligible: p.Samples == 1 && p.Steps <= 28 && p.Width*p.Height <= 1048576,
 		V5:           v5,

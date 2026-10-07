@@ -27,6 +27,9 @@ export interface ClientKey {
   opus_confirmed_at?: string
   opus_pending_by_account?: Record<string, number>
   opus_share_warning: boolean
+  successful_generations: number
+  successful_images: number
+  formula_anlas: number
   allocated_anlas: number
   spent_anlas: number
   pending_anlas: number
@@ -59,6 +62,8 @@ export interface AdminQuota {
   unlimited_opus_keys: number
   account_quotas: AccountQuota[]
   account_errors: { account_id: string; name: string }[]
+  known_account_count: number
+  unknown_balance_account_count: number
 }
 
 export interface Account {
@@ -67,28 +72,42 @@ export interface Account {
   enabled: boolean
   token_configured: boolean
   key_count: number
+  provider: 'novelai' | 'new_api'
+  origin?: string
+  enabled_models?: string[]
+}
+
+export interface AccountInput {
+  name: string
+  token: string
+  enabled: boolean
+  provider: Account['provider']
+  origin?: string
+  enabled_models?: string[]
 }
 
 export interface AccountQuota {
   account_id: string
   name: string
-  upstream_fixed_anlas: number
-  upstream_purchased_anlas: number
-  projected_fixed_anlas: number
-  projected_purchased_anlas: number
+  provider: Account['provider']
+  upstream_balance_known: boolean
+  upstream_fixed_anlas: number | null
+  upstream_purchased_anlas: number | null
+  projected_fixed_anlas: number | null
+  projected_purchased_anlas: number | null
   allocated_fixed_anlas: number
   allocated_purchased_anlas: number
-  unallocated_fixed_anlas: number
-  unallocated_purchased_anlas: number
-  projected_opus_percent: number
+  unallocated_fixed_anlas: number | null
+  unallocated_purchased_anlas: number | null
+  projected_opus_percent: number | null
   allocated_opus_images: number
-  unallocated_opus_images: number
+  unallocated_opus_images: number | null
   opus_predicted: boolean
   opus_confirmed_at: string
   opus_next_percent_at: string
   active: boolean
   isGracePeriod: boolean
-  tier: number
+  tier: number | null
   snapshot_age_seconds: number
 }
 
@@ -196,8 +215,8 @@ async function request<T>(key: string, path: string, method = 'GET', body?: unkn
 
 export const api = {
   accounts: (key: string) => request<Account[]>(key, '/admin/accounts'),
-  createAccount: (key: string, input: { name: string; token: string; enabled: boolean }) => request<Account>(key, '/admin/accounts', 'POST', input),
-  updateAccount: (key: string, id: string, input: { name?: string; token?: string; enabled?: boolean }) => request<Account>(key, `/admin/accounts/${id}`, 'PUT', input),
+  createAccount: (key: string, input: AccountInput) => request<Account>(key, '/admin/accounts', 'POST', input),
+  updateAccount: (key: string, id: string, input: AccountInput) => request<Account>(key, `/admin/accounts/${id}`, 'PUT', input),
   deleteAccount: (key: string, id: string) => request<void>(key, `/admin/accounts/${id}`, 'DELETE'),
   refreshAccountQuota: (key: string, id: string) => request<AccountQuota>(key, `/admin/accounts/${id}/quota/refresh`, 'POST'),
   settings: (key: string) => request<AdminSettings>(key, '/admin/settings'),

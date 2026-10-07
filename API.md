@@ -8,7 +8,7 @@
 Authorization: Bearer <key>
 ```
 
-`/admin/*` 使用 `PROXY_ADMIN_KEY`；其他需要认证的接口使用管理员签发的客户端 key。代理会在转发官方接口时，将客户端 key 替换为选定账号的 NovelAI Token。客户端不需要也不应持有上游 Token。
+`/admin/*` 使用 `PROXY_ADMIN_KEY`；其他需要认证的接口使用管理员签发的客户端 key。代理会在转发图片接口时，将客户端 key 替换为选定账号的 NovelAI Token 或中转站 Key。客户端不需要也不应持有上游凭据。
 
 内置管理页面默认位于 `/console/`，可用 `PUT /admin/settings` 的 `admin_ui_path` 字段修改。路径须以 `/` 开头，无结尾斜杠，长度不超过 128，只能包含英文字母、数字、`-`、`_` 和作为分隔符的 `/`；首段不能占用 `admin`、`ai`、`image`、`user`、`quota`、`healthz` 或 `jobs`。修改立即生效，旧页面地址不再提供静态文件；`/admin/*` 的 API 地址和认证方式不变。
 
@@ -16,9 +16,9 @@ Authorization: Bearer <key>
 
 `GET /healthz` 无需认证，只检查服务进程状态。
 
-## 官方接口
+## 图片接口
 
-代理根地址对应 `https://image.novelai.net`。客户端替换基址后，保持原有方法、路径和请求体：
+官方账号的代理根地址对应 `https://image.novelai.net`。中转站账号的生成请求发送到账号配置的根地址；客户端仍保持原有方法、路径和请求体：
 
 | 方法 | 代理路径 | 上游 |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ curl -H "Authorization: Bearer $CLIENT_KEY" -H 'Content-Type: application/json' 
   --data-binary @request.json "$BASE/ai/generate-image" --output image.zip
 ```
 
-生成、Vibe 编码、导演增强和扩散超分同时接受 JSON 或 `multipart/form-data` 请求体。multipart 中的 `request` part 必须是 JSON；图片等二进制 part 与原始 Content-Type 会原样转发给官方。代理只读取 `request` part 来估算费用。单次生成支持 `n_samples` 为 1–4；多图必须先在管理配置中全局开启、再逐 key 授权，默认均关闭。多图全部按点数预留，不使用 Opus 免费配额。
+生成、Vibe 编码、导演增强和扩散超分同时接受 JSON 或 `multipart/form-data` 请求体。multipart 中的 `request` part 必须是 JSON；图片等二进制 part 与原始 Content-Type 会原样转发给所选上游。代理只读取 `request` part 来估算费用。单次生成支持 `n_samples` 为 1–4；多图必须先在管理配置中全局开启、再逐 key 授权，默认均关闭。多图全部按点数预留，不使用 Opus 免费配额。中转站账号仅接收已启用模型的生成请求；`-inpainting` 型号使用对应基础模型的开关。同步和流式生成分别转发到同名上游路径，不自动切换。
 
 响应图片、ZIP、Vibe 向量和流式帧不重新编码。上游状态码与响应体直接返回给客户端；代理自身的鉴权、队列、参数和配额错误由代理返回。
 
@@ -75,9 +75,9 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | --- | --- |
 | `GET /admin/quota` | 读取各账号缓存额度与汇总；`account_quotas` 按账号列出，`account_errors` 标记暂不可用账号 |
 | `POST /admin/quota/refresh` | 请求刷新各已启用账号的官方快照；每账号距上次成功刷新不足 30 秒时返回缓存 |
-| `GET /admin/accounts` | 列出账号名称、启停状态、Token 可解密状态和固定绑定的 key 数量；不返回 Token |
-| `POST /admin/accounts` | 添加账号，提交 `{"name":"账号二","token":"<NovelAI Token>","enabled":true}` |
-| `PUT /admin/accounts/{id}` | 修改名称、替换 Token 或设置 `enabled`；字段可部分提交 |
+| `GET /admin/accounts` | 列出账号类型、名称、启停状态、上游地址、模型开关及固定绑定的 key 数量；不返回 Token |
+| `POST /admin/accounts` | 添加官方账号：`{"name":"账号二","token":"<NovelAI Token>","enabled":true}`；添加中转站见下文 |
+| `PUT /admin/accounts/{id}` | 修改名称、替换 Token/Key、地址、模型开关或 `enabled`；账号类型不可修改 |
 | `DELETE /admin/accounts/{id}` | 删除没有绑定 key 的账号；有固定绑定 key 时先处理 key |
 | `GET /admin/accounts/{id}/quota` | 查询单账号缓存额度及有限固定分配额 |
 | `POST /admin/accounts/{id}/quota/refresh` | 请求刷新单账号额度；受最短 30 秒刷新间隔限制 |
@@ -111,6 +111,8 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 
 `account_id` 选择上游账号。新 key 默认 `pool`，每次生成从已启用账号依次轮询，跳过额度不足或暂不可用的账号；也可指定 `GET /admin/accounts` 返回的账号 ID 进行固定绑定。停用账号后，池不会再选它，固定绑定的 key 在重新启用前不可生成。旧账本中没有 `account_id` 的 key 继续绑定 `default` 账号；已有用量的 key 不允许更换账号策略。所有账号共用同一条 FIFO 队列，不会跨账号并发转发。账号 Token 在服务端加密保存；更换管理员密钥后需重新录入无法解密的账号 Token。
 
+中转站账号示例：`{"name":"中转站","provider":"new_api","origin":"https://momo.bailan.shop","token":"<中转站 Key>","enabled_models":["nai-diffusion-4-5-full","nai-diffusion-4-5-curated","nai-diffusion-5-full","nai-diffusion-5-curated"]}`。`origin` 必须是无路径、查询或凭据的 HTTP(S) 根地址。中转站不提供可信的官方余额或 Opus 快照；`GET /admin/quota` 的官方汇总只包含可查询的官方账号，`account_quotas` 对中转站返回 `upstream_balance_known:false` 及空余额。混合账号池的预算无法归属到某个上游，单列在 `unattributed_pool_fixed_anlas` 和 `unattributed_pool_purchased_anlas`。固定绑定中转站的 key 不能启用 Opus，允许的 Anlas 上限作为本地预算；账号池只会把已启用模型的生成请求交给中转站。4.5 Full 的流式路由可能被该站以 402 拒绝，代理不会回退到普通路由。
+
 签发或提高有限分配额时，代理使用各账号缓存的预计余额校验：固定 key 的剩余分配额不超过对应账号余额，池 key 的剩余分配额不超过已启用且可用账号扣除固定分配后的总余额。无限额度不预留固定点数，多把无限 key 可共享官方剩余额；管理统计中的 `unlimited_*_keys` 显示此类 key 数量，`unallocated_*` 只计算有限分配。旧版 `allocation_anlas` 仍可作为订阅点数上限的简写，旧账本也会映射为订阅点数策略。旧哈希 key 仍有效但无法显示明文，可通过轮换转换成新格式。NovelAI 决定实际先扣哪一类 Anlas，代理无法指定官方的扣费来源；这两个开关和上限控制的是**本地预算分类**，不是官方子账户。
 
 ## 客户端额度
@@ -120,9 +122,9 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/quota"
 curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 ```
 
-`GET /quota` 返回该 key 的账号策略、三组权限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。比例模式的剩余量是逐账号可用次数的合计；无限累计模式的本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定 key 使用所属账号的预计余额，池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
+`GET /quota` 返回该 key 的账号策略、三组权限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。比例模式的剩余量是逐账号可用次数的合计；无限累计模式的本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定官方 key 使用所属账号的预计余额，纯官方账号池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。包含中转站的 key 返回 `balance_source:"local_budget_upstream_unknown"`，点数最多显示 10000，仅为兼容客户端的本地预算，不代表上游余额。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。
 
-管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示；现有账本不提供按日历史曲线。
+`GET /admin/keys` 和 `GET /quota` 另返回 `successful_generations`、`successful_images`、`formula_anlas`，分别为确认收到完整图片的生成请求次数、图片张数及公式参考点数。参考点数以像素和 steps 的基础公式计算，V5 基价乘 1.5，再加 Vibe/导演参考附加项，并按 `n_samples` 计入。它是未扣除免费生成、试用等因素的标价估算，**不是实际上游扣费**；旧请求无法回填。中转站的本地预算按该公式价扣减。官方账号仍使用保守预留；已计入的预算扣减分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。4xx 会退回预留；5xx、连接中断等不确定结果保留为待核对量。
 
 ## 图片归档
 

@@ -89,6 +89,19 @@ type reservation struct {
 func chooseReservation(k clientKey, cost jobCost, q *quotaSnapshot) (reservation, error) {
 	var hold reservation
 	paid := cost.Full
+	if q.UnknownBalance {
+		paid = cost.FormulaAnlas
+		if paid <= 0 {
+			return hold, errors.New("route is unavailable for this upstream")
+		}
+		hold.Fixed = min(paid, fixedRemaining(k))
+		paid -= hold.Fixed
+		hold.Purchased = min(paid, purchasedRemaining(k))
+		if paid > hold.Purchased {
+			return reservation{}, errors.New("local Anlas budget or permission insufficient")
+		}
+		return hold, nil
+	}
 	opusAccount := q.Official.Tier == 3 && (q.Official.Active || q.Official.Grace)
 	if cost.OpusEligible && opusAccount {
 		free := !cost.V5

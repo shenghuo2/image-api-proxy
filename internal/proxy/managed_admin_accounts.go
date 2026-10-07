@@ -9,22 +9,29 @@ import (
 )
 
 type publicAccount struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Enabled         bool   `json:"enabled"`
-	TokenConfigured bool   `json:"token_configured"`
-	KeyCount        int    `json:"key_count"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Enabled         bool     `json:"enabled"`
+	TokenConfigured bool     `json:"token_configured"`
+	KeyCount        int      `json:"key_count"`
+	Provider        string   `json:"provider"`
+	Origin          string   `json:"origin,omitempty"`
+	EnabledModels   []string `json:"enabled_models,omitempty"`
 }
 
 type accountInput struct {
-	Name    string `json:"name"`
-	Token   string `json:"token"`
-	Enabled *bool  `json:"enabled"`
+	Name          string   `json:"name"`
+	Token         string   `json:"token"`
+	Enabled       *bool    `json:"enabled"`
+	Provider      string   `json:"provider"`
+	Origin        *string  `json:"origin"`
+	EnabledModels []string `json:"enabled_models"`
 }
 
 func (h *ManagedHandler) viewAccount(account upstreamAccount, keys []clientKey) publicAccount {
 	_, err := h.vault.open(account.TokenCiphertext)
-	view := publicAccount{ID: account.ID, Name: account.Name, Enabled: !account.Disabled, TokenConfigured: err == nil}
+	view := publicAccount{ID: account.ID, Name: account.Name, Enabled: !account.Disabled, TokenConfigured: err == nil,
+		Provider: account.provider(), Origin: account.Origin, EnabledModels: account.EnabledModels}
 	for _, key := range keys {
 		if keyAccountID(key) == account.ID {
 			view.KeyCount++
@@ -85,7 +92,12 @@ func (h *ManagedHandler) activeQuotas(ctx context.Context) (map[string]*quotaSna
 
 func validateAccountAllocations(keys []clientKey, quotas map[string]*quotaSnapshot) error {
 	var freeFixed, freePurchased int64
+	var unknownBalance bool
 	for id, q := range quotas {
+		if q.UnknownBalance {
+			unknownBalance = true
+			continue
+		}
 		fixed, purchased := totalRemainingForAccount(keys, id)
 		if fixed > q.Fixed || purchased > q.Purchased {
 			return errors.New("not enough unallocated upstream Anlas")
@@ -94,7 +106,7 @@ func validateAccountAllocations(keys []clientKey, quotas map[string]*quotaSnapsh
 		freePurchased += q.Purchased - purchased
 	}
 	poolFixed, poolPurchased := totalRemainingForPool(keys)
-	if poolFixed > freeFixed || poolPurchased > freePurchased {
+	if !unknownBalance && (poolFixed > freeFixed || poolPurchased > freePurchased) {
 		return errors.New("not enough unallocated upstream Anlas")
 	}
 	return nil
@@ -143,6 +155,13 @@ func (h *ManagedHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid account", http.StatusBadRequest)
 		return
 	}
+	if input.Provider == "" {
+		input.Provider = providerNovelAI
+	}
+	if !validAccountConfig(input.Provider, input.Origin, input.EnabledModels) {
+		http.Error(w, "invalid account provider, origin or models", http.StatusBadRequest)
+		return
+	}
 	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
 		h.queueError(w, err)
@@ -167,7 +186,11 @@ func (h *ManagedHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	account := upstreamAccount{ID: id, Name: strings.TrimSpace(input.Name), TokenCiphertext: ciphertext}
+	account := upstreamAccount{ID: id, Name: strings.TrimSpace(input.Name), TokenCiphertext: ciphertext, Provider: input.Provider}
+	if input.Provider == providerNewAPI {
+		account.Origin = *input.Origin
+		account.EnabledModels = append([]string(nil), input.EnabledModels...)
+	}
 	if input.Enabled != nil {
 		account.Disabled = !*input.Enabled
 	}
@@ -190,6 +213,29 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 	if err := decodeAdminBody(r, &input); err != nil || len(input.Name) > 80 || len(input.Token) > 2048 || (input.Token != "" && len(input.Token) < 16) {
 		http.Error(w, "invalid account", http.StatusBadRequest)
 		return
+	}
+	current, ok := h.accounts.find(id)
+	if !ok {
+		http.Error(w, "account not found", http.StatusNotFound)
+		return
+	}
+	if input.Provider != "" && input.Provider != current.provider() {
+		http.Error(w, "account provider cannot be changed", http.StatusBadRequest)
+		return
+	}
+	if input.Origin != nil || input.EnabledModels != nil {
+		origin := current.Origin
+		models := current.EnabledModels
+		if input.Origin != nil {
+			origin = *input.Origin
+		}
+		if input.EnabledModels != nil {
+			models = input.EnabledModels
+		}
+		if !validAccountConfig(current.provider(), &origin, models) {
+			http.Error(w, "invalid account origin or models", http.StatusBadRequest)
+			return
+		}
 	}
 	release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
 	if err != nil {
@@ -224,6 +270,12 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 			if input.Enabled != nil {
 				accounts[i].Disabled = !*input.Enabled
 			}
+			if input.Origin != nil {
+				accounts[i].Origin = *input.Origin
+			}
+			if input.EnabledModels != nil {
+				accounts[i].EnabledModels = append([]string(nil), input.EnabledModels...)
+			}
 			updated = accounts[i]
 			return accounts, nil
 		}
@@ -236,6 +288,17 @@ func (h *ManagedHandler) updateAccount(w http.ResponseWriter, r *http.Request, i
 	delete(h.quotas, id)
 	delete(h.lastQuotaAttempt, id)
 	jsonReply(w, http.StatusOK, h.viewAccount(updated, h.store.snapshot()))
+}
+
+func validAccountConfig(provider string, origin *string, models []string) bool {
+	if provider == providerNovelAI {
+		return (origin == nil || *origin == "") && len(models) == 0
+	}
+	if provider != providerNewAPI || origin == nil || !validNewAPIModels(models) {
+		return false
+	}
+	u, err := parseUpstream(*origin)
+	return err == nil && u.Fragment == "" && u.String() == *origin
 }
 
 func (h *ManagedHandler) deleteAccount(w http.ResponseWriter, r *http.Request, id string) {
@@ -298,13 +361,25 @@ func (h *ManagedHandler) serveAccountQuota(w http.ResponseWriter, r *http.Reques
 
 func accountQuotaView(account upstreamAccount, q *quotaSnapshot, keys []clientKey) map[string]any {
 	fixed, purchased := totalRemainingForAccount(keys, account.ID)
+	if q.UnknownBalance {
+		return map[string]any{
+			"account_id": account.ID, "name": account.Name, "provider": account.provider(),
+			"upstream_balance_known": false, "upstream_fixed_anlas": nil, "upstream_purchased_anlas": nil,
+			"projected_fixed_anlas": nil, "projected_purchased_anlas": nil,
+			"allocated_fixed_anlas": fixed, "allocated_purchased_anlas": purchased,
+			"unallocated_fixed_anlas": nil, "unallocated_purchased_anlas": nil,
+			"projected_opus_percent": nil, "allocated_opus_images": 0, "unallocated_opus_images": nil,
+			"opus_predicted": false, "opus_confirmed_at": nil, "opus_next_percent_at": nil,
+			"active": true, "isGracePeriod": false, "tier": nil, "snapshot_age_seconds": 0,
+		}
+	}
 	opusAllocatedImages := opusAllocated(keys, account.ID) / opusUnit
 	opusAvailableImages := opusUnits(q.projectedOpusPercent()) / opusUnit
 	if q.Official.Tier != 3 || (!q.Official.Active && !q.Official.Grace) {
 		opusAllocatedImages = 0
 	}
 	return map[string]any{
-		"account_id": account.ID, "name": account.Name,
+		"account_id": account.ID, "name": account.Name, "provider": account.provider(), "upstream_balance_known": true,
 		"upstream_fixed_anlas": q.Official.Fixed, "upstream_purchased_anlas": q.Official.Purchased,
 		"projected_fixed_anlas": q.Fixed, "projected_purchased_anlas": q.Purchased,
 		"allocated_fixed_anlas": fixed, "allocated_purchased_anlas": purchased,
