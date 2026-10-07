@@ -147,17 +147,27 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodPut:
 		var input struct {
-			AllowMultiImage *bool   `json:"allow_multi_image"`
-			ArchiveEnabled  *bool   `json:"archive_enabled"`
-			ArchiveDays     *int    `json:"archive_retention_days"`
-			ArchiveMaxBytes *int64  `json:"archive_max_bytes"`
-			AdminUIPath     *string `json:"admin_ui_path"`
+			ChargePendingAsSpent *bool   `json:"charge_pending_as_spent"`
+			AllowMultiImage      *bool   `json:"allow_multi_image"`
+			ArchiveEnabled       *bool   `json:"archive_enabled"`
+			ArchiveDays          *int    `json:"archive_retention_days"`
+			ArchiveMaxBytes      *int64  `json:"archive_max_bytes"`
+			AdminUIPath          *string `json:"admin_ui_path"`
 		}
-		if err := decodeAdminBody(r, &input); err != nil || (input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil) {
+		if err := decodeAdminBody(r, &input); err != nil || (input.ChargePendingAsSpent == nil && input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil) {
 			http.Error(w, "invalid settings", http.StatusBadRequest)
 			return
 		}
+		release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
+		if err != nil {
+			h.queueError(w, err)
+			return
+		}
+		defer release()
 		next := h.settings.snapshot()
+		if input.ChargePendingAsSpent != nil {
+			next.ChargePendingAsSpent = *input.ChargePendingAsSpent
+		}
 		if input.AllowMultiImage != nil {
 			next.AllowMultiImage = *input.AllowMultiImage
 		}
@@ -181,7 +191,7 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid admin UI path", http.StatusBadRequest)
 			return
 		}
-		if err := h.settings.set(next); err != nil {
+		if err := h.settings.setWithAccounting(next, h.store); err != nil {
 			http.Error(w, "settings unavailable", http.StatusInternalServerError)
 			return
 		}

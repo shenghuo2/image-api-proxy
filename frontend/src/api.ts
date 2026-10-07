@@ -128,6 +128,7 @@ export interface KeyPolicy {
 }
 
 export interface AdminSettings {
+  charge_pending_as_spent: boolean
   allow_multi_image: boolean
   archive_enabled: boolean
   archive_retention_days: number

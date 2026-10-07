@@ -138,6 +138,11 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if settings.snapshot().ChargePendingAsSpent {
+		if err := settings.setWithAccounting(settings.snapshot(), store); err != nil {
+			return nil, fmt.Errorf("commit pending accounting: %w", err)
+		}
+	}
 	archive, err := newArchiveManager(db, cfg.StatePath, settings)
 	if err != nil {
 		return nil, err
@@ -780,10 +785,18 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	}
 	if capture != nil {
 		defer func() { _ = capture.file.Close(); _ = os.Remove(capture.file.Name()) }()
-		imageProxy.ServeHTTP(capture, upstreamRequest)
-	} else {
-		imageProxy.ServeHTTP(tracked, upstreamRequest)
 	}
+	var responseWriter http.ResponseWriter = tracked
+	if capture != nil {
+		responseWriter = capture
+	}
+	aborted := serveImageResponse(imageProxy, responseWriter, upstreamRequest)
+	if aborted {
+		// Settle the reservation before net/http terminates the response.
+		defer func() { panic(http.ErrAbortHandler) }()
+	}
+	complete := !aborted && r.Context().Err() == nil
+	generated := tracked.status >= 200 && tracked.status < 300 && cost.Samples > 0 && tracked.bodyBytes > 0 && tracked.generatedImage() && (complete || tracked.stream != nil)
 	if capture != nil {
 		id, idErr := randomHex(16)
 		if idErr != nil {
@@ -793,14 +806,19 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 			if durableID, ok := r.Context().Value(archiveJobIDKey{}).(string); ok {
 				groupID = durableID
 			}
-			h.archive.finishCapture(capture, archiveWork{ID: id, GroupID: groupID, KeyID: current.ID, KeyName: current.Name, IP: h.clientIP(r), Route: selected.path, Completed: time.Now()}, tracked.status >= 200 && tracked.status < 300 && r.Context().Err() == nil)
+			h.archive.finishCapture(capture, archiveWork{ID: id, GroupID: groupID, KeyID: current.ID, KeyName: current.Name, IP: h.clientIP(r), Route: selected.path, Completed: time.Now()}, tracked.status >= 200 && tracked.status < 300 && (complete || generated))
 		}
 	}
-	if tracked.status < 200 || (tracked.status >= 300 && tracked.status < 400) || tracked.status >= 500 || r.Context().Err() != nil {
-		return // The upstream outcome is uncertain; keep the reservation pending.
+	streamRejected := tracked.stream != nil && tracked.stream.errorCode >= 400 && tracked.stream.errorCode < 500
+	refund := tracked.status >= 400 && tracked.status < 500 || tracked.status >= 200 && tracked.status < 300 && streamRejected
+	uncertain := !generated && !refund && (tracked.status < 200 || tracked.status >= 300 || !complete || tracked.stream != nil)
+	if uncertain {
+		charge := h.settings.snapshot().ChargePendingAsSpent
+		slog.Warn("generation outcome uncertain", "key_id", key.ID, "route", selected.path, "status", tracked.status, "response_interrupted", aborted, "client_closed", r.Context().Err() != nil, "charge_pending_as_spent", charge)
+		if !charge {
+			return // Keep the existing reservation pending for manual reconciliation.
+		}
 	}
-	refund := tracked.status >= 400
-	generated := !refund && cost.Samples > 0 && tracked.bodyBytes > 0 && tracked.generatedImage()
 	projectedOpus = nil
 	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		for i := range keys {
@@ -852,11 +870,27 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 			q.OpusJobsSinceRefresh -= hold.Opus
 		}
 	}
+	if err != nil {
+		slog.Error("generation accounting unavailable", "key_id", key.ID, "route", selected.path, "error", err)
+	}
 	if err == nil && generated {
 		if saveErr := h.db.recordGeneration(time.Now(), cost.Samples); saveErr != nil {
 			slog.Warn("generation activity unavailable", "error", saveErr)
 		}
 	}
+}
+
+func serveImageResponse(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *http.Request) (aborted bool) {
+	defer func() {
+		if value := recover(); value != nil {
+			if value != http.ErrAbortHandler {
+				panic(value)
+			}
+			aborted = true
+		}
+	}()
+	proxy.ServeHTTP(w, r)
+	return false
 }
 
 func projectedUsage(q *quotaSnapshot, opusImages int64) json.RawMessage {

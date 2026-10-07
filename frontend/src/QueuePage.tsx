@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
 import { Clock3, KeyRound, ListOrdered, RefreshCw, Workflow } from 'lucide-react'
 import { api, ApiError, type ClientKey, type QueueEntry, type QueueState } from './api'
+import { useAutoRefresh } from './useAutoRefresh'
 
 const number = new Intl.NumberFormat('zh-CN')
 const limitText = (value: number) => value === -1 ? '不限' : number.format(value)
@@ -46,16 +47,7 @@ export function QueuePage({ adminKey, keys, onAuthFailure }: { adminKey: string;
     }
   }, [adminKey, onAuthFailure])
 
-  useEffect(() => {
-    void refresh()
-    const timer = window.setInterval(() => { if (!document.hidden) void refresh() }, 5000)
-    const onVisible = () => { if (!document.hidden) void refresh() }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [refresh])
+  useAutoRefresh(refresh)
 
   const keyByID = useMemo(() => new Map(keys.map((key) => [key.id, key])), [keys])
   const occupancy = useMemo(() => {

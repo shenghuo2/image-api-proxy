@@ -10,11 +10,12 @@ import (
 )
 
 type proxySettings struct {
-	AllowMultiImage bool   `json:"allow_multi_image"`
-	ArchiveEnabled  bool   `json:"archive_enabled"`
-	ArchiveDays     int    `json:"archive_retention_days"`
-	ArchiveMaxBytes int64  `json:"archive_max_bytes"`
-	AdminUIPath     string `json:"admin_ui_path"`
+	ChargePendingAsSpent bool   `json:"charge_pending_as_spent"`
+	AllowMultiImage      bool   `json:"allow_multi_image"`
+	ArchiveEnabled       bool   `json:"archive_enabled"`
+	ArchiveDays          int    `json:"archive_retention_days"`
+	ArchiveMaxBytes      int64  `json:"archive_max_bytes"`
+	AdminUIPath          string `json:"admin_ui_path"`
 }
 
 func defaultProxySettings() proxySettings {
@@ -80,6 +81,34 @@ func (s *settingsStore) snapshot() proxySettings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.data
+}
+
+// The caller holds the generation FIFO so no live reservation can be reconciled.
+// Pending amounts are already included in spent; committing never charges twice.
+func (s *settingsStore) setWithAccounting(value proxySettings, keys *keyStore) error {
+	if !value.ChargePendingAsSpent {
+		return s.set(value)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys.mu.Lock()
+	defer keys.mu.Unlock()
+	if s.db == nil || keys.db != s.db {
+		return errors.New("accounting database unavailable")
+	}
+	next := cloneKeys(keys.keys)
+	for i := range next {
+		next[i].FixedPending, next[i].PurchasedPending, next[i].OpusPending = 0, 0, 0
+		for id, bucket := range next[i].OpusBuckets {
+			bucket.Pending = 0
+			next[i].OpusBuckets[id] = bucket
+		}
+	}
+	if err := s.db.saveSettingsAndKeys(value, next); err != nil {
+		return err
+	}
+	s.data, keys.keys = value, next
+	return nil
 }
 
 func (s *settingsStore) set(value proxySettings) error {

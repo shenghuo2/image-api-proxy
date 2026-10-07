@@ -1,14 +1,15 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strconv"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// streamOutcome examines complete frames after forwarding them to the client.
+// streamOutcome examines complete upstream frames, including a final image
+// received just before the downstream client closes its connection.
 // It keeps only one frame at a time and never changes the upstream response.
 type streamOutcome struct {
 	header    [4]byte
@@ -17,6 +18,7 @@ type streamOutcome struct {
 	frameLen  int
 	final     bool
 	invalid   bool
+	errorCode int
 }
 
 func (s *streamOutcome) write(data []byte) {
@@ -47,11 +49,16 @@ func (s *streamOutcome) write(data []byte) {
 			return
 		}
 		if code, ok := message["code"]; ok && code != nil && fmt.Sprint(code) != "200" {
+			s.errorCode, _ = strconv.Atoi(fmt.Sprint(code))
 			s.invalid = true
 			return
 		}
 		if message["step_ix"] == nil {
-			if image, ok := message["image"].([]byte); ok && bytes.HasPrefix(image, []byte("\x89PNG\r\n\x1a\n")) {
+			if image, ok := message["image"].([]byte); ok {
+				if validatePNG(image) != nil {
+					s.invalid = true
+					return
+				}
 				s.final = true
 			}
 		}
@@ -61,5 +68,5 @@ func (s *streamOutcome) write(data []byte) {
 }
 
 func (s *streamOutcome) success() bool {
-	return !s.invalid && s.final && s.headerLen == 0 && s.frame == nil
+	return !s.invalid && s.final
 }
