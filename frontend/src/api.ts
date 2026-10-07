@@ -27,6 +27,9 @@ export interface ClientKey {
   opus_confirmed_at?: string
   opus_pending_by_account?: Record<string, number>
   opus_share_warning: boolean
+  successful_generations: number
+  successful_images: number
+  formula_anlas: number
   allocated_anlas: number
   spent_anlas: number
   pending_anlas: number
@@ -109,6 +112,7 @@ export interface KeyPolicy {
 }
 
 export interface AdminSettings {
+  charge_pending_as_spent: boolean
   allow_multi_image: boolean
   archive_enabled: boolean
   archive_retention_days: number

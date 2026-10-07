@@ -120,9 +120,11 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/quota"
 curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 ```
 
-`GET /quota` 返回该 key 的账号策略、三组权限、已用量、待核对量、剩余量和当前队列长度，不触发官方请求，也不返回明文 key。比例模式的剩余量是逐账号可用次数的合计；无限累计模式的本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定 key 使用所属账号的预计余额，池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
+`GET /quota` 返回该 key 的账号策略、三组权限、已用量、待核对量、剩余量、成功生成次数、图片张数和当前队列长度，不触发官方请求，也不返回明文 key。比例模式的剩余量是逐账号可用次数的合计；无限累计模式的本地剩余额以 `-1` 表示。`GET /user/subscription` 使用缓存，保留官方风格的 `active`、`isGracePeriod` 和 `tier`；固定 key 使用所属账号的预计余额，池 key 使用可用账号预计余额的合计。`trainingStepsLeft` 按该 key 的本地剩余额裁剪。`usage` 显示账号 Opus 配额与该 key 剩余次数的较小值；池模式的百分比汇总上限为 100%，仅供兼容官方形状的展示，不代表单一账号的实际配额。这里显示的点数分类和 Opus 次数是代理预算，不代表官方账户的原始账目。
 
-管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示；现有账本不提供按日历史曲线。
+管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示。`successful_generations` 为已确认成功的请求次数，`successful_images` 为这些请求的图片张数，均包含消耗 Anlas 与使用 Opus 的生成；一次多图只计 1 次请求。`formula_anlas` 为成功请求按官方公式计算、未扣除免费额度的参考点数。上述累计字段从支持它们的版本开始记录，旧版未记录的成功请求无法准确回填。
+
+`PUT /admin/settings` 支持 `charge_pending_as_spent`（默认 `false`）。设为 `true` 会立即把所有 key 已有待核对预留（包括 Anlas 和 Opus 逐账号预留）提交为本地计费，并使之后无法确认结果的请求自动按预留值计费。预留已经包含在 spent/used 中，提交仅清除 pending，不重复扣减、不退款，也不增加成功生成次数。设置和已有预留在一个 SQLite 事务中提交，并等待当前 FIFO 请求结束；重启后仍会提交遗留预留。改回 `false` 只影响之后的未确认请求，不能恢复已提交的待核对状态。此选项是本地预算估算策略，不能证明上游实际扣费。
 
 ## 图片归档
 
@@ -175,7 +177,7 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
 
 `/admin/images/stats` 返回 `count`、`bytes`、`pending`、`failures`、`last_error` 和 `ever_archived`，其中 `pending` 是等待后台归档处理的数量，不是生成队列长度。`ever_archived` 成功归档后永久为 `true`，删除或清理全部图片也不重置。升级时仅能从仍存在的旧图片回填。图片接口必须带管理员 Bearer 认证，不要把管理密钥拼入图片 URL；删除成功返回 204。
 
-`GET /admin/usage/hours` 接受与 `/admin/images/overview` 相同的 `from`、`to`、`offset_minutes` 参数，返回 `hours` 数组；每项有本地 `date`、`hour`、`count`（成功响应的生成图片张数）和 `generations`（请求次数）。从 `v0.1.3` 起，生成响应为非空 `2xx`、连接未断开、额度结算成功，且普通响应带 PNG/ZIP 文件头或流式响应包含完整最终成图帧时，写入本地 SQLite。普通、流式、`/image` 别名和持久化任务均参与；不依赖归档开关。旧请求缺少完成时间，无法回填。时间数据按 15 分钟聚合，只用于管理统计，不调用官方额度接口。
+`GET /admin/usage/hours` 接受与 `/admin/images/overview` 相同的 `from`、`to`、`offset_minutes` 参数，返回 `hours` 数组；每项有本地 `date`、`hour`、`count`（成功响应的生成图片张数）和 `generations`（请求次数）。从 `v0.1.3` 起，生成响应为非空 `2xx`、额度结算成功，且普通响应带 PNG/ZIP 文件头或流式响应包含完整、有效的最终 PNG 帧时，写入本地 SQLite。普通、流式、`/image` 别名和持久化任务均参与；不依赖归档开关。收到完整最终 PNG 的流式请求，即使客户端随后关闭连接，也会计入成功次数和时间统计；只有预览帧、最终帧不完整或错误时不会计成功。旧请求缺少完成时间，无法回填。时间数据按 15 分钟聚合，只用于管理统计，不调用官方额度接口。
 
 ## 排队与结算
 
@@ -185,7 +187,7 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_KEY" \
 
 每个账号的官方订阅独立缓存 5 分钟，可用 `PROXY_QUOTA_TTL` 设为 1 分钟至 1 小时。缓存期内各请求只使用对应账号的本地预计余额；单账号刷新失败后 30 秒内不会反复请求官方，池模式会继续尝试其他可用账号。管理员可查看 `snapshot_age_seconds`，或调用刷新接口；因此 `GET /admin/quota` 和 `GET /user/subscription` 不保证实时反映官方变化。
 
-生成前按像素、步数和附加项保守预留 Anlas；Vibe 编码预留 2 Anlas，超分预留 200 Anlas。Opus 免费尺寸请求按每张 1 次计入 key 上限；V5 的 Opus 配额低于 5% 且尚未耗尽时会拒绝这类请求，以免无法判断官方是否会改扣 Anlas。上游 2xx 会按预留值记账，明确的 4xx 会退回，5xx、连接中断和取消会保留为待核对额。代理**不再为每个任务查询前后官方余额**，因此本地扣费是保守估算，不会按单次官方实际扣费自动退款；周期刷新只校准各账号的预计余额，无法准确把差额追溯到某把 key。管理员可结合官方账目调整上限，或用 `/reconcile` 处理待核对请求；人工核对后下一次读取官方额度会重新获取快照。
+生成前按像素、步数和附加项保守预留 Anlas；Vibe 编码预留 2 Anlas，超分预留 200 Anlas。Opus 免费尺寸请求按每张 1 次计入 key 上限；V5 的 Opus 配额低于 5% 且尚未耗尽时会拒绝这类请求，以免无法判断官方是否会改扣 Anlas。普通上游 2xx 会按预留值记账；流式请求收到完整有效终图即按成功结算，终图之后断连不会留下待核对。明确的 HTTP 4xx 或流内 4xx 错误帧会退回；5xx、终图前断连、取消及缺少有效终图的流式响应默认保留待核对预留。代理**不再为每个任务查询前后官方余额**，因此本地扣费是保守估算，不会按单次官方实际扣费自动退款；周期刷新只校准各账号的预计余额，无法准确把差额追溯到某把 key。管理员可结合官方账目调整上限，或用 `/reconcile` 处理待核对请求；人工核对后下一次读取官方额度会重新获取快照。
 
 导演增强按客户端采用的 28 步像素公式保守预留点数，背景移除按三倍基础费用加 5 计算。导演工具即使在官方 Opus 条件下可能免费，代理仍按点数预算保守记账；需要精确核账时请参考官方账户记录。
 

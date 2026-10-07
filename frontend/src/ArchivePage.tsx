@@ -11,6 +11,7 @@ import { Selector } from '@astryxdesign/core/Selector'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Download, Eye, Filter, Image as ImageIcon, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { api, imageBlob, type ArchiveImage, type ArchiveIPs, type ArchiveList, type ArchiveOverview, type ArchiveStats, type ClientKey } from './api'
+import { useAutoRefresh } from './useAutoRefresh'
 
 type ArchiveFilters = { keyID: string; ips: string[]; ipMode: 'include' | 'exclude'; from?: ISODateString; to?: ISODateString }
 
@@ -111,10 +112,13 @@ export function ArchivePage({ adminKey, keys, onStatsChange }: { adminKey: strin
   const requestNumber = useRef(0)
   const ipRequestNumber = useRef(0)
   const overviewRequestNumber = useRef(0)
+  const listLoads = useRef(0)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (background = false) => {
+    if (background && listLoads.current > 0) return
     const request = ++requestNumber.current
-    setLoading(true)
+    ++listLoads.current
+    if (!background) setLoading(true)
     try {
       const params = new URLSearchParams({ page: String(page) })
       if (filters.keyID !== 'all') params.set('key_id', filters.keyID)
@@ -133,6 +137,7 @@ export function ArchivePage({ adminKey, keys, onStatsChange }: { adminKey: strin
     } catch (cause) {
       if (request === requestNumber.current) setError(cause instanceof Error ? cause.message : '图库加载失败')
     } finally {
+      --listLoads.current
       if (request === requestNumber.current) setLoading(false)
     }
   }, [adminKey, filters, page])
@@ -173,7 +178,9 @@ export function ArchivePage({ adminKey, keys, onStatsChange }: { adminKey: strin
   useEffect(() => { void loadOverview() }, [loadOverview])
   useEffect(() => { void loadIPs() }, [loadIPs])
 
-  const refresh = () => { void load(); void loadOverview(); void loadIPs() }
+  const refresh = useCallback(async () => { await Promise.allSettled([load(), loadOverview(), loadIPs()]) }, [load, loadOverview, loadIPs])
+  const refreshBackground = useCallback(async () => { await Promise.allSettled([load(true), loadOverview(), loadIPs()]) }, [load, loadOverview, loadIPs])
+  useAutoRefresh(refreshBackground, !deleting, 5000, false)
 
   const applyFilters = (event?: FormEvent) => {
     event?.preventDefault()

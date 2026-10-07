@@ -444,6 +444,27 @@ func (s *stateDB) saveSettings(value proxySettings) error {
 	return err
 }
 
+func (s *stateDB) saveSettingsAndKeys(value proxySettings, keys []clientKey) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec("UPDATE settings SET data=? WHERE id=1", data); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := putJSON(tx, "keys", key.ID, key); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *stateDB) saveJob(job durableJob) error {
 	tx, err := s.db.Begin()
 	if err != nil {

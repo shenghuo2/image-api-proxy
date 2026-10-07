@@ -253,21 +253,20 @@ func (w *archiveWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	n, err := w.ResponseWriter.Write(p)
-	if n > 0 && w.status >= 200 && w.status < 300 && w.err == nil {
-		if w.size+int64(n) > maxCaptureBytes {
+	if len(p) > 0 && w.status >= 200 && w.status < 300 && w.err == nil {
+		if w.size+int64(len(p)) > maxCaptureBytes {
 			w.err = errors.New("archive response exceeds capture limit")
 		} else {
-			m, writeErr := w.file.Write(p[:n])
+			m, writeErr := w.file.Write(p)
 			w.size += int64(m)
 			if writeErr != nil {
 				w.err = writeErr
-			} else if m != n {
+			} else if m != len(p) {
 				w.err = io.ErrShortWrite
 			}
 		}
 	}
-	return n, err
+	return w.ResponseWriter.Write(p)
 }
 func (w *archiveWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 

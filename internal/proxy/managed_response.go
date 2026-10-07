@@ -25,15 +25,12 @@ func (w *statusWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	n, err := w.ResponseWriter.Write(data)
-	w.bodyBytes += int64(n)
-	if n > 0 {
-		w.prefixLen += copy(w.prefix[w.prefixLen:], data[:n])
-		if w.stream != nil {
-			w.stream.write(data[:n])
-		}
+	w.bodyBytes += int64(len(data))
+	w.prefixLen += copy(w.prefix[w.prefixLen:], data)
+	if w.stream != nil {
+		w.stream.write(data)
 	}
-	return n, err
+	return w.ResponseWriter.Write(data)
 }
 
 func (w *statusWriter) generatedImage() bool {

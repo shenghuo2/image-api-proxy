@@ -9,6 +9,8 @@ import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQ
 import { QueuePage } from './QueuePage'
 import { ArchivePage } from './ArchivePage'
 import { UsageHeatmap } from './UsageHeatmap'
+import { NumberInput } from './NumberInput'
+import { useAutoRefresh } from './useAutoRefresh'
 
 type View = 'overview' | 'queue' | 'accounts' | 'keys' | 'usage' | 'archive' | 'settings'
 type DialogState =
@@ -129,12 +131,12 @@ function KeyIdentity({ item }: { item: ClientKey }) {
   return <div className="key-identity"><span className={`key-avatar ${item.revoked ? 'muted' : ''}`}>{item.name.slice(0, 1).toUpperCase()}</span><span className="key-ident-text"><strong>{item.name}</strong><small>{item.id} · {accountLabel}{item.opus_share_warning ? ' · 比例超额，已按比例调整' : ''}</small></span></div>
 }
 
-function UsageBars({ keys, metric = 'anlas', limit = 6 }: { keys: ClientKey[]; metric?: 'anlas' | 'fixed' | 'purchased' | 'opus'; limit?: number }) {
+function UsageBars({ keys, metric = 'anlas', limit = 6 }: { keys: ClientKey[]; metric?: 'generations' | 'anlas' | 'fixed' | 'purchased' | 'opus'; limit?: number }) {
   const getValue = (key: ClientKey) => metric === 'fixed'
     ? Math.max(0, key.fixed_anlas_spent - key.fixed_anlas_pending)
     : metric === 'purchased'
       ? Math.max(0, key.purchased_anlas_spent - key.purchased_anlas_pending)
-      : metric === 'opus' ? committedOpus(key) : committedAnlas(key)
+      : metric === 'opus' ? committedOpus(key) : metric === 'generations' ? key.successful_generations : committedAnlas(key)
   const ordered = [...keys].sort((a, b) => getValue(b) - getValue(a)).slice(0, limit)
   const maximum = Math.max(1, ...ordered.map(getValue))
   if (!ordered.length) return <div className="empty-state">暂无密钥用量</div>
@@ -192,8 +194,8 @@ function KeysPage({ keys, onCreate, onEdit, onReconcile, onRevoke, onReveal, onR
   return <>
     <div className="page-intro"><div><span className="eyebrow">ACCESS CONTROL</span><h1>密钥管理</h1><p>{fmt(keys.filter((key) => !key.revoked).length)} 把有效密钥</p></div><Button label="签发密钥" variant="primary" icon={<Plus size={17} />} onClick={onCreate} /></div>
     <section className="page-section key-section"><div className="section-heading key-heading"><div><h2>分发密钥</h2></div><div className="table-tools"><label className="search-field"><Search size={16} /><input aria-label="搜索密钥" placeholder="搜索名称或 ID" value={search} onChange={(event) => setSearch(event.target.value)} /></label><select aria-label="筛选密钥状态" value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="active">有效</option><option value="all">全部</option><option value="revoked">已撤销</option></select></div></div>
-      <div className="table-scroll"><table className="data-table key-table"><thead><tr><th>密钥</th><th>状态</th><th>订阅点数</th><th>付费购入点数</th><th>Opus 配额</th><th>排队上限</th><th>待核对</th><th className="actions-head">操作</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></td><td><div className="table-number">{fmt(item.fixed_anlas_spent)} <small>/ {fmtLimit(item.fixed_anlas_limit)}</small></div><div className="mini-track"><span className="blue" style={{ width: `${clampPercent(item.fixed_anlas_spent, item.fixed_anlas_limit)}%` }} /></div></td><td><div className="table-number">{fmt(item.purchased_anlas_spent)} <small>/ {fmtLimit(item.purchased_anlas_limit)}</small></div><div className="mini-track"><span className="orange" style={{ width: `${clampPercent(item.purchased_anlas_spent, item.purchased_anlas_limit)}%` }} /></div></td><td><div className="table-number" title={item.opus_limit_mode === 'percent' ? `累计已生成 ${fmt(item.opus_used_images)} 次` : undefined}>{fmt(opusShown(item))} <small>/ {opusLimit(item)}</small></div><div className="mini-track"><span className="purple" style={{ width: `${clampPercent(opusShown(item), item.opus_effective_limit_images)}%` }} /></div>{item.opus_limit_mode === 'percent' && <small>{item.opus_limit_percent}% 自动回充 · 累计 {fmt(committedOpus(item))}{item.opus_predicted ? ' · 含预测' : ''}</small>}</td><td>{fmtLimit(item.queue_limit)}</td><td>{fmt(item.pending_anlas + item.opus_pending_images)}</td><td><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} onReveal={() => onReveal(item)} onRotate={() => onRotate(item)} /></td></tr>)}</tbody></table></div>
-      <div className="mobile-key-list">{visible.map((item) => <article className="mobile-key" key={item.id}><div className="mobile-key-head"><KeyIdentity item={item} /><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></div><div className="mobile-key-stats"><span>订阅点数 <b>{fmt(item.fixed_anlas_spent)} / {fmtLimit(item.fixed_anlas_limit)}</b></span><span>付费购入点数 <b>{fmt(item.purchased_anlas_spent)} / {fmtLimit(item.purchased_anlas_limit)}</b></span><span>Opus {item.opus_limit_mode === 'percent' ? '当前可用' : '累计使用'} <b>{fmt(opusShown(item))} / {opusLimit(item)}</b></span><span>排队上限 <b>{fmtLimit(item.queue_limit)}</b></span><span>待核对 <b>{fmt(item.pending_anlas + item.opus_pending_images)}</b></span></div><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} onReveal={() => onReveal(item)} onRotate={() => onRotate(item)} /></article>)}</div>
+      <div className="table-scroll"><table className="data-table key-table"><thead><tr><th>密钥</th><th>状态</th><th>订阅点数</th><th>付费购入点数</th><th>Opus 配额</th><th>成功生成</th><th>排队上限</th><th>待核对</th><th className="actions-head">操作</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></td><td><div className="table-number">{fmt(item.fixed_anlas_spent)} <small>/ {fmtLimit(item.fixed_anlas_limit)}</small></div><div className="mini-track"><span className="blue" style={{ width: `${clampPercent(item.fixed_anlas_spent, item.fixed_anlas_limit)}%` }} /></div></td><td><div className="table-number">{fmt(item.purchased_anlas_spent)} <small>/ {fmtLimit(item.purchased_anlas_limit)}</small></div><div className="mini-track"><span className="orange" style={{ width: `${clampPercent(item.purchased_anlas_spent, item.purchased_anlas_limit)}%` }} /></div></td><td><div className="table-number" title={item.opus_limit_mode === 'percent' ? `累计已生成 ${fmt(item.opus_used_images)} 次` : undefined}>{fmt(opusShown(item))} <small>/ {opusLimit(item)}</small></div><div className="mini-track"><span className="purple" style={{ width: `${clampPercent(opusShown(item), item.opus_effective_limit_images)}%` }} /></div>{item.opus_limit_mode === 'percent' && <small>{item.opus_limit_percent}% 自动回充 · 累计 {fmt(committedOpus(item))}{item.opus_predicted ? ' · 含预测' : ''}</small>}</td><td><div className="table-number">{fmt(item.successful_generations)} <small>次</small></div><small>{fmt(item.successful_images)} 张图片</small></td><td>{fmtLimit(item.queue_limit)}</td><td>{fmt(item.pending_anlas + item.opus_pending_images)}</td><td><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} onReveal={() => onReveal(item)} onRotate={() => onRotate(item)} /></td></tr>)}</tbody></table></div>
+      <div className="mobile-key-list">{visible.map((item) => <article className="mobile-key" key={item.id}><div className="mobile-key-head"><KeyIdentity item={item} /><span className={`status-badge ${item.revoked ? 'revoked' : 'active'}`}>{item.revoked ? '已撤销' : '有效'}</span></div><div className="mobile-key-stats"><span>订阅点数 <b>{fmt(item.fixed_anlas_spent)} / {fmtLimit(item.fixed_anlas_limit)}</b></span><span>付费购入点数 <b>{fmt(item.purchased_anlas_spent)} / {fmtLimit(item.purchased_anlas_limit)}</b></span><span>Opus {item.opus_limit_mode === 'percent' ? '当前可用' : '累计使用'} <b>{fmt(opusShown(item))} / {opusLimit(item)}</b></span><span>成功生成 <b>{fmt(item.successful_generations)} 次 · {fmt(item.successful_images)} 张</b></span><span>排队上限 <b>{fmtLimit(item.queue_limit)}</b></span><span>待核对 <b>{fmt(item.pending_anlas + item.opus_pending_images)}</b></span></div><KeyActions item={item} onEdit={() => onEdit(item)} onReconcile={() => onReconcile(item)} onRevoke={() => onRevoke(item)} onReveal={() => onReveal(item)} onRotate={() => onRotate(item)} /></article>)}</div>
       {!visible.length && <div className="empty-state">没有匹配的密钥</div>}
       <div className="table-footer">显示 {fmt(visible.length)} / {fmt(keys.length)} 把密钥</div>
     </section>
@@ -201,7 +203,7 @@ function KeysPage({ keys, onCreate, onEdit, onReconcile, onRevoke, onReveal, onR
 }
 
 function UsagePage({ keys, adminKey }: { keys: ClientKey[]; adminKey: string }) {
-  const [metric, setMetric] = useState<'anlas' | 'fixed' | 'purchased' | 'opus'>('anlas')
+  const [metric, setMetric] = useState<'generations' | 'anlas' | 'fixed' | 'purchased' | 'opus'>('generations')
   const [includeRevoked, setIncludeRevoked] = useState(true)
   const visible = keys.filter((key) => includeRevoked || !key.revoked).sort((a, b) => committedAnlas(b) - committedAnlas(a))
   const totalFixed = keys.reduce((sum, key) => sum + Math.max(0, key.fixed_anlas_spent - key.fixed_anlas_pending), 0)
@@ -209,18 +211,17 @@ function UsagePage({ keys, adminKey }: { keys: ClientKey[]; adminKey: string }) 
   const totalOpus = keys.reduce((sum, key) => sum + committedOpus(key), 0)
   return <>
     <div className="page-intro"><div><span className="eyebrow">USAGE ANALYTICS</span><h1>用量统计</h1><p>逐密钥累计估算</p></div></div>
-    <div className="metric-grid three"><Metric icon={<CreditCard size={18} />} label="订阅点数" value={fmt(totalFixed)} detail="已计入用量" tone="blue" /><Metric icon={<CreditCard size={18} />} label="付费购入点数" value={fmt(totalPurchased)} detail="已计入用量" tone="orange" /><Metric icon={<Zap size={18} />} label="Opus 生成" value={fmt(totalOpus)} detail="已计入次数" tone="purple" /></div>
+    <div className="metric-grid"><Metric icon={<Images size={18} />} label="成功生成" value={fmt(keys.reduce((sum, key) => sum + key.successful_generations, 0))} detail={`${fmt(keys.reduce((sum, key) => sum + key.successful_images, 0))} 张图片 · 包括付费生成`} tone="green" /><Metric icon={<CreditCard size={18} />} label="订阅点数" value={fmt(totalFixed)} detail="已计入用量" tone="blue" /><Metric icon={<CreditCard size={18} />} label="付费购入点数" value={fmt(totalPurchased)} detail="已计入用量" tone="orange" /><Metric icon={<Zap size={18} />} label="Opus 生成" value={fmt(totalOpus)} detail="已计入次数" tone="purple" /></div>
     <UsageHeatmap adminKey={adminKey} />
-    <section className="page-section"><div className="section-heading"><div><span className="eyebrow">DISTRIBUTION</span><h2>密钥用量分布</h2></div><div className="segmented" role="group" aria-label="用量类型">{([['anlas', '全部 Anlas'], ['fixed', '订阅点数'], ['purchased', '付费购入点数'], ['opus', 'Opus']] as const).map(([id, label]) => <button type="button" key={id} aria-pressed={metric === id} className={metric === id ? 'active' : ''} onClick={() => setMetric(id)}>{label}</button>)}</div></div><UsageBars keys={visible} metric={metric} limit={10} /></section>
-    <section className="page-section usage-list"><div className="section-heading"><div><span className="eyebrow">PER KEY</span><h2>逐密钥明细</h2></div><label className="check-line"><input type="checkbox" checked={includeRevoked} onChange={(event) => setIncludeRevoked(event.target.checked)} /> 包含已撤销</label></div><div className="table-scroll"><table className="data-table"><thead><tr><th>密钥</th><th>订阅点数</th><th>付费购入点数</th><th>合计</th><th>Opus 次数</th><th>待核对 Anlas</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td>{fmt(Math.max(0, item.fixed_anlas_spent - item.fixed_anlas_pending))}</td><td>{fmt(Math.max(0, item.purchased_anlas_spent - item.purchased_anlas_pending))}</td><td><strong>{fmt(committedAnlas(item))}</strong></td><td>{fmt(committedOpus(item))}</td><td>{fmt(item.pending_anlas)}</td></tr>)}</tbody></table></div>{!visible.length && <div className="empty-state">暂无密钥用量</div>}</section>
+    <section className="page-section"><div className="section-heading"><div><span className="eyebrow">DISTRIBUTION</span><h2>密钥用量分布</h2></div><div className="segmented" role="group" aria-label="用量类型">{([['generations', '成功次数'], ['anlas', '全部 Anlas'], ['fixed', '订阅点数'], ['purchased', '付费购入点数'], ['opus', 'Opus']] as const).map(([id, label]) => <button type="button" key={id} aria-pressed={metric === id} className={metric === id ? 'active' : ''} onClick={() => setMetric(id)}>{label}</button>)}</div></div><UsageBars keys={visible} metric={metric} limit={10} /></section>
+    <section className="page-section usage-list"><div className="section-heading"><div><span className="eyebrow">PER KEY</span><h2>逐密钥明细</h2></div><label className="check-line"><input type="checkbox" checked={includeRevoked} onChange={(event) => setIncludeRevoked(event.target.checked)} /> 包含已撤销</label></div><div className="table-scroll"><table className="data-table"><thead><tr><th>密钥</th><th>成功次数</th><th>图片张数</th><th>订阅点数</th><th>付费购入点数</th><th>合计</th><th>Opus 次数</th><th>待核对 Anlas</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><KeyIdentity item={item} /></td><td>{fmt(item.successful_generations)} 次</td><td>{fmt(item.successful_images)} 张</td><td>{fmt(Math.max(0, item.fixed_anlas_spent - item.fixed_anlas_pending))}</td><td>{fmt(Math.max(0, item.purchased_anlas_spent - item.purchased_anlas_pending))}</td><td><strong>{fmt(committedAnlas(item))}</strong></td><td>{fmt(committedOpus(item))}</td><td>{fmt(item.pending_anlas)}</td></tr>)}</tbody></table></div>{!visible.length && <div className="empty-state">暂无密钥用量</div>}</section>
   </>
 }
 
 function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings: AdminSettings | null; busy: boolean; onChange: (changes: Partial<AdminSettings>) => void; onSaveAdminPath: (path: string) => Promise<void> }) {
-  const [days, setDays] = useState(settings?.archive_retention_days ?? 30)
-  const [capacity, setCapacity] = useState((settings?.archive_max_bytes ?? 20 * 1073741824) / 1073741824)
-  const [adminPath, setAdminPath] = useState(settings?.admin_ui_path ?? '/console')
-  useEffect(() => { if (settings) { setDays(settings.archive_retention_days); setCapacity(settings.archive_max_bytes / 1073741824); setAdminPath(settings.admin_ui_path) } }, [settings])
+  const [days, setDays] = useSettingsDraft(settings?.archive_retention_days, 30)
+  const [capacity, setCapacity] = useSettingsDraft(settings ? settings.archive_max_bytes / 1073741824 : undefined, 20)
+  const [adminPath, setAdminPath] = useSettingsDraft(settings?.admin_ui_path, '/console')
   const validAdminPath = adminPath.length <= 128 && /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(adminPath) && !['admin', 'ai', 'image', 'user', 'quota', 'healthz', 'jobs'].includes(adminPath.split('/')[1])
   return <>
     <div className="page-intro"><div><span className="eyebrow">CONFIGURATION</span><h1>配置</h1></div></div>
@@ -234,11 +235,26 @@ function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings:
     <section className="page-section settings-section"><div className="section-heading"><h2>生成权限</h2></div>
       <div className="policy-row"><div className="policy-row-top"><div><strong>允许分配单次多图</strong><small>开启后可在单个密钥中单独授权；多图请求全部消耗点数，不使用 Opus 配额</small></div><label className="switch"><input type="checkbox" checked={settings?.allow_multi_image ?? false} disabled={!settings || busy} onChange={(event) => onChange({ allow_multi_image: event.target.checked })} aria-label="允许分配单次多图" /><span /></label></div></div>
     </section>
+    <section className="page-section settings-section"><div className="section-heading"><h2>计费核对</h2></div>
+      <div className="policy-row"><div className="policy-row-top"><div><strong>待核对预留全部计费</strong><small>开启时立即将已有待核对预留计入本地预算，之后未确认的请求也按预留计费；不会重复扣减或增加成功次数。关闭后仅影响之后的请求。</small></div><label className="switch"><input type="checkbox" checked={settings?.charge_pending_as_spent ?? false} disabled={!settings || busy} onChange={(event) => onChange({ charge_pending_as_spent: event.target.checked })} aria-label="待核对预留全部计费" /><span /></label></div></div>
+    </section>
     <section className="page-section settings-section"><div className="section-heading"><h2>图片归档</h2></div>
       <div className="policy-row"><div className="policy-row-top"><div><strong>归档成功生成的图片</strong><small>保存原始 PNG 与小于 100 KiB 的 JPEG 缩略图</small></div><label className="switch"><input type="checkbox" checked={settings?.archive_enabled ?? false} disabled={!settings || busy} onChange={(event) => onChange({ archive_enabled: event.target.checked })} aria-label="开启图片归档" /><span /></label></div></div>
-      <div className="archive-settings"><label>保留天数（-1 不限）<input type="number" min="-1" max="36500" step="1" value={days} disabled={!settings || busy} onChange={(event) => setDays(Number(event.target.value))} /></label><label>容量上限（GiB）<input type="number" min="0.001" max="1024" step="0.1" value={capacity} disabled={!settings || busy} onChange={(event) => setCapacity(Number(event.target.value))} /></label><button type="button" disabled={!settings || busy || days < -1 || days > 36500 || capacity < 0.001 || capacity > 1024} onClick={() => onChange({ archive_retention_days: days, archive_max_bytes: Math.round(capacity * 1073741824) })}>保存保留策略</button></div>
+      <form className="archive-settings" onSubmit={(event) => { event.preventDefault(); onChange({ archive_retention_days: days, archive_max_bytes: Math.round(capacity * 1073741824) }) }}><label>保留天数（-1 不限）<NumberInput min="-1" max="36500" step="1" value={days} disabled={!settings || busy} onChange={(value) => setDays(value)} /></label><label>容量上限（GiB）<NumberInput min="0.001" max="1024" step="0.1" value={capacity} disabled={!settings || busy} onChange={(value) => setCapacity(value)} /></label><button type="submit" disabled={!settings || busy}>保存保留策略</button></form>
     </section>
   </>
+}
+
+function useSettingsDraft<T extends string | number>(source: T | undefined, fallback: T) {
+  const [draft, setDraft] = useState(source ?? fallback)
+  const previous = useRef(source ?? fallback)
+  useEffect(() => {
+    if (source === undefined) return
+    const old = previous.current
+    setDraft((current) => Object.is(current, old) ? source : current)
+    previous.current = source
+  }, [source])
+  return [draft, setDraft] as const
 }
 
 const emptyPolicy: KeyPolicy = { name: '', account_id: 'pool', allow_fixed_anlas: false, fixed_anlas_limit: 0, allow_purchased_anlas: false, purchased_anlas_limit: 0, allow_opus: false, opus_limit_mode: 'images', opus_limit_percent: 0, opus_limit_images: 0, allow_multi_image: false, archive_enabled: true, queue_limit: -1 }
@@ -257,10 +273,10 @@ function KeyForm({ existing, accounts, multiImageAvailable, busy, error, onSave,
   return <form className="policy-form" onSubmit={submit}>
     <div className="field"><label htmlFor="key-name">名称</label><input id="key-name" value={policy.name} maxLength={80} onChange={(event) => update('name', event.target.value)} placeholder="例如：生产环境" required autoFocus /></div>
     <div className="field"><label htmlFor="key-account">上游账号</label><select id="key-account" value={policy.account_id} onChange={(event) => update('account_id', event.target.value)} disabled={Boolean(existing && existing.spent_anlas + existing.opus_used_images > 0)}><option value="pool">已启用账号轮询</option>{accounts.map((account) => <option key={account.id} value={account.id} disabled={!account.enabled && policy.account_id !== account.id}>{account.name}{account.enabled ? '' : '（已停用）'}</option>)}</select></div>
-    <div className="field"><label htmlFor="queue-limit">最多等待请求（-1 不限，0 不排队）</label><input id="queue-limit" type="number" min="-1" max="10000" step="1" value={policy.queue_limit} onChange={(event) => update('queue_limit', Number(event.target.value))} required /></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>订阅点数</strong><small>订阅获得的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_fixed_anlas} onChange={(event) => update('allow_fixed_anlas', event.target.checked)} aria-label="允许使用订阅点数" /><span /></label></div><div className="field inline"><label htmlFor="fixed-limit">累计上限（-1 为不限）</label><input id="fixed-limit" type="number" min="-1" max="1000000000" step="1" value={policy.fixed_anlas_limit} onChange={(event) => update('fixed_anlas_limit', Number(event.target.value))} /></div></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>付费购入点数</strong><small>另行购买的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_purchased_anlas} onChange={(event) => update('allow_purchased_anlas', event.target.checked)} aria-label="允许使用付费购入点数" /><span /></label></div><div className="field inline"><label htmlFor="purchased-limit">累计上限（-1 为不限）</label><input id="purchased-limit" type="number" min="-1" max="1000000000" step="1" value={policy.purchased_anlas_limit} onChange={(event) => update('purchased_anlas_limit', Number(event.target.value))} /></div></div>
-    <div className="policy-row"><div className="policy-row-top"><div><strong>Opus 配额</strong><small>此密钥可用的免费生成次数</small></div><label className="switch"><input type="checkbox" checked={policy.allow_opus} onChange={(event) => update('allow_opus', event.target.checked)} aria-label="允许使用 Opus 配额" /><span /></label></div><div className="segmented policy-segmented" role="group" aria-label="Opus 限制方式"><button type="button" aria-pressed={policy.opus_limit_mode === 'images'} className={policy.opus_limit_mode === 'images' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'images')}>按次数</button><button type="button" aria-pressed={policy.opus_limit_mode === 'percent'} className={policy.opus_limit_mode === 'percent' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'percent')}>按比例自动回充</button></div>{policy.opus_limit_mode === 'images' ? <div className="field inline"><label htmlFor="opus-limit">累计上限（-1 为不限）</label><input id="opus-limit" type="number" min="-1" max="10000000" step="1" value={policy.opus_limit_images} onChange={(event) => update('opus_limit_images', Number(event.target.value))} /></div> : <div className="field inline"><label htmlFor="opus-percent">满额占比（额度条约 {fmt(Math.floor(policy.opus_limit_percent * 1730 / 100))} 次）</label><input id="opus-percent" type="number" min="0" max="100" step="0.1" value={policy.opus_limit_percent} onChange={(event) => update('opus_limit_percent', Number(event.target.value))} /></div>}</div>
+    <div className="field"><label htmlFor="queue-limit">最多等待请求（-1 不限，0 不排队）</label><NumberInput id="queue-limit" min="-1" max="10000" step="1" value={policy.queue_limit} onChange={(value) => update('queue_limit', value)} required /></div>
+    <div className="policy-row"><div className="policy-row-top"><div><strong>订阅点数</strong><small>订阅获得的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_fixed_anlas} onChange={(event) => update('allow_fixed_anlas', event.target.checked)} aria-label="允许使用订阅点数" /><span /></label></div><div className="field inline"><label htmlFor="fixed-limit">累计上限（-1 为不限）</label><NumberInput id="fixed-limit" min="-1" max="1000000000" step="1" value={policy.fixed_anlas_limit} onChange={(value) => update('fixed_anlas_limit', value)} /></div></div>
+    <div className="policy-row"><div className="policy-row-top"><div><strong>付费购入点数</strong><small>另行购买的 Anlas</small></div><label className="switch"><input type="checkbox" checked={policy.allow_purchased_anlas} onChange={(event) => update('allow_purchased_anlas', event.target.checked)} aria-label="允许使用付费购入点数" /><span /></label></div><div className="field inline"><label htmlFor="purchased-limit">累计上限（-1 为不限）</label><NumberInput id="purchased-limit" min="-1" max="1000000000" step="1" value={policy.purchased_anlas_limit} onChange={(value) => update('purchased_anlas_limit', value)} /></div></div>
+    <div className="policy-row"><div className="policy-row-top"><div><strong>Opus 配额</strong><small>此密钥可用的免费生成次数</small></div><label className="switch"><input type="checkbox" checked={policy.allow_opus} onChange={(event) => update('allow_opus', event.target.checked)} aria-label="允许使用 Opus 配额" /><span /></label></div><div className="segmented policy-segmented" role="group" aria-label="Opus 限制方式"><button type="button" aria-pressed={policy.opus_limit_mode === 'images'} className={policy.opus_limit_mode === 'images' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'images')}>按次数</button><button type="button" aria-pressed={policy.opus_limit_mode === 'percent'} className={policy.opus_limit_mode === 'percent' ? 'active' : ''} onClick={() => update('opus_limit_mode', 'percent')}>按比例自动回充</button></div>{policy.opus_limit_mode === 'images' ? <div className="field inline"><label htmlFor="opus-limit">累计上限（-1 为不限）</label><NumberInput id="opus-limit" min="-1" max="10000000" step="1" value={policy.opus_limit_images} onChange={(value) => update('opus_limit_images', value)} /></div> : <div className="field inline"><label htmlFor="opus-percent">满额占比（额度条约 {fmt(Math.floor(policy.opus_limit_percent * 1730 / 100))} 次）</label><NumberInput id="opus-percent" min="0" max="100" step="0.1" value={policy.opus_limit_percent} onChange={(value) => update('opus_limit_percent', value)} /></div>}</div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>单次多图</strong><small>{multiImageAvailable ? '允许一次生成 2–4 张；全部消耗点数，不使用 Opus 配额' : '全局功能已关闭；请先在配置页开启'}</small></div><label className="switch"><input type="checkbox" checked={policy.allow_multi_image} disabled={!multiImageAvailable} onChange={(event) => update('allow_multi_image', event.target.checked)} aria-label="允许此密钥单次多图" /><span /></label></div></div>
     <div className="policy-row"><div className="policy-row-top"><div><strong>参与图片归档</strong><small>只影响之后成功生成的图片</small></div><label className="switch"><input type="checkbox" checked={policy.archive_enabled} onChange={(event) => update('archive_enabled', event.target.checked)} aria-label="允许此密钥参与归档" /><span /></label></div></div>
     {error && <div className="form-error" role="alert">{error}</div>}
@@ -297,8 +313,12 @@ export function App() {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [dialog, setDialog] = useState<DialogState>(null)
   const [copied, setCopied] = useState(false)
+  const loadNumber = useRef(0)
+  const loadsInFlight = useRef(0)
 
   const logout = useCallback(() => {
+    ++loadNumber.current
+    setLoading(false)
     sessionStorage.removeItem(sessionKey)
     setAdminKey('')
     setKeys([])
@@ -310,15 +330,21 @@ export function App() {
     setDialog(null)
   }, [])
 
-  const load = useCallback(async (key: string) => {
-    setLoading(true)
+  const load = useCallback(async (key: string, background = false) => {
+    if (background && loadsInFlight.current > 0) return
+    const request = ++loadNumber.current
+    ++loadsInFlight.current
+    if (!background) setLoading(true)
     const [keyResult, quotaResult, settingsResult, accountResult, archiveResult] = await Promise.allSettled([api.keys(key), api.quota(key), api.settings(key), api.accounts(key), api.imageStats(key)])
+    --loadsInFlight.current
+    if (request !== loadNumber.current) return
+    const authFailure = [keyResult, quotaResult, settingsResult, accountResult, archiveResult].some((result) => result.status === 'rejected' && result.reason instanceof ApiError && result.reason.status === 401)
+    if (authFailure) { setLoading(false); logout(); return }
     if (keyResult.status === 'rejected') {
-      if (keyResult.reason instanceof ApiError && keyResult.reason.status === 401) logout()
-      else setError(describeError(keyResult.reason))
+      if (!background) setError(describeError(keyResult.reason))
     } else {
       setKeys(keyResult.value)
-      setError(null)
+      if (!background) setError(null)
       setUpdatedAt(new Date())
     }
     if (quotaResult.status === 'fulfilled') {
@@ -328,14 +354,16 @@ export function App() {
       setQuotaError(describeError(quotaResult.reason))
     }
     if (settingsResult.status === 'fulfilled') setSettings(settingsResult.value)
-    else setError(describeError(settingsResult.reason))
+    else if (!background) setError(describeError(settingsResult.reason))
     if (accountResult.status === 'fulfilled') setAccounts(accountResult.value)
-    else setError(describeError(accountResult.reason))
+    else if (!background) setError(describeError(accountResult.reason))
     if (archiveResult.status === 'fulfilled') setArchiveStats(archiveResult.value)
     setLoading(false)
   }, [logout])
 
   useEffect(() => { if (adminKey) void load(adminKey) }, [adminKey, load])
+  const refreshData = useCallback(() => load(adminKey, true), [adminKey, load])
+  useAutoRefresh(refreshData, Boolean(adminKey) && !busy && !refreshingQuota, 5000, false)
   const showArchive = settings?.archive_enabled !== false || archiveStats === null || archiveStats.ever_archived || archiveStats.count > 0 || archiveStats.pending > 0
   useEffect(() => { if (!showArchive && view === 'archive') setView('usage') }, [showArchive, view])
 
@@ -355,18 +383,30 @@ export function App() {
   }
 
   const mutate = async (work: () => Promise<void>) => {
+    ++loadNumber.current
+    setLoading(false)
     setBusy(true)
     setError(null)
     try { await work() } catch (cause) { setError(describeError(cause)) } finally { setBusy(false) }
   }
 
   const refreshQuota = async () => {
+    ++loadNumber.current
+    setLoading(false)
     setRefreshingQuota(true)
     try { setQuota(await api.refreshQuota(adminKey)); setQuotaError(null) } catch (cause) { setQuotaError(describeError(cause)) } finally { setRefreshingQuota(false) }
   }
 
   const changeSettings = (changes: Partial<AdminSettings>) => mutate(async () => {
-    setSettings(await api.updateSettings(adminKey, changes))
+    const previous = settings
+    setSettings((current) => current ? { ...current, ...changes } : current)
+    try {
+      setSettings(await api.updateSettings(adminKey, changes))
+    } catch (cause) {
+      setSettings(previous)
+      throw cause
+    }
+    await load(adminKey)
   })
 
   const changeAdminPath = async (path: string) => {
@@ -476,11 +516,11 @@ function ReconcileModal({ item, accounts, busy, error, onSave, onClose }: { item
   return <Modal title={`核对 ${item.name}`} onClose={onClose}>
     <form className="modal-body" onSubmit={(event) => { event.preventDefault(); void onSave(charged, opus, pendingByAccount.length ? byAccount : undefined) }}>
       <div className="reconcile-summary"><span>待核对 Anlas <strong>{fmt(item.pending_anlas)}</strong></span><span>待核对 Opus <strong>{fmt(item.opus_pending_images)}</strong></span></div>
-      <div className="field"><label htmlFor="charged-anlas">实际计入 Anlas</label><input id="charged-anlas" type="number" min="0" max="1000000000" step="1" value={charged} onChange={(event) => setCharged(Number(event.target.value))} required /></div>
+      <div className="field"><label htmlFor="charged-anlas">实际计入 Anlas</label><NumberInput id="charged-anlas" min="0" max="1000000000" step="1" value={charged} onChange={(value) => setCharged(value)} required /></div>
       {pendingByAccount.length ? <>
-        {pendingByAccount.map(([accountID, count]) => <div className="field" key={accountID}><label htmlFor={`charged-opus-${accountID}`}>{accounts.find((account) => account.id === accountID)?.name ?? accountID} 实际计入 Opus（待核对 {fmt(count)}）</label><input id={`charged-opus-${accountID}`} type="number" min="0" max={count} step="1" value={byAccount[accountID] ?? 0} onChange={(event) => setByAccount((current) => ({ ...current, [accountID]: Number(event.target.value) }))} required /></div>)}
-        {unknownPending > 0 && <div className="field"><label htmlFor="charged-opus-unknown">旧记录实际计入 Opus（待核对 {fmt(unknownPending)}）</label><input id="charged-opus-unknown" type="number" min="0" max={unknownPending} step="1" value={unknownCharged} onChange={(event) => setUnknownCharged(Number(event.target.value))} required /></div>}
-      </> : <div className="field"><label htmlFor="charged-opus">实际计入 Opus 次数</label><input id="charged-opus" type="number" min="0" max="10000000" step="1" value={legacyOpus} onChange={(event) => setLegacyOpus(Number(event.target.value))} required /></div>}
+        {pendingByAccount.map(([accountID, count]) => <div className="field" key={accountID}><label htmlFor={`charged-opus-${accountID}`}>{accounts.find((account) => account.id === accountID)?.name ?? accountID} 实际计入 Opus（待核对 {fmt(count)}）</label><NumberInput id={`charged-opus-${accountID}`} min="0" max={count} step="1" value={byAccount[accountID] ?? 0} onChange={(value) => setByAccount((current) => ({ ...current, [accountID]: value }))} required /></div>)}
+        {unknownPending > 0 && <div className="field"><label htmlFor="charged-opus-unknown">旧记录实际计入 Opus（待核对 {fmt(unknownPending)}）</label><NumberInput id="charged-opus-unknown" min="0" max={unknownPending} step="1" value={unknownCharged} onChange={(value) => setUnknownCharged(value)} required /></div>}
+      </> : <div className="field"><label htmlFor="charged-opus">实际计入 Opus 次数</label><NumberInput id="charged-opus" min="0" max="10000000" step="1" value={legacyOpus} onChange={(value) => setLegacyOpus(value)} required /></div>}
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="modal-actions"><Button label="取消" variant="secondary" onClick={onClose} /><Button label="确认核对" variant="primary" type="submit" isLoading={busy} /></div>
     </form>

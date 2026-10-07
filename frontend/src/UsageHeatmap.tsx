@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
 import { RefreshCw } from 'lucide-react'
 import { api, type UsageHours } from './api'
+import { useAutoRefresh } from './useAutoRefresh'
 
 const number = new Intl.NumberFormat('zh-CN')
 
@@ -30,7 +31,7 @@ export function UsageHeatmap({ adminKey }: { adminKey: string }) {
     }
   }, [adminKey])
 
-  useEffect(() => { void load() }, [load])
+  useAutoRefresh(load)
 
   const today = new Date()
   const days = Array.from({ length: 7 }, (_, index) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6 + index))

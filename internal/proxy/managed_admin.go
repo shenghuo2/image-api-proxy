@@ -10,43 +10,46 @@ import (
 )
 
 type publicKey struct {
-	ID                   string           `json:"id"`
-	Name                 string           `json:"name"`
-	AccountID            string           `json:"account_id"`
-	AccountName          string           `json:"account_name,omitempty"`
-	AllowFixed           bool             `json:"allow_fixed_anlas"`
-	FixedLimit           int64            `json:"fixed_anlas_limit"`
-	FixedSpent           int64            `json:"fixed_anlas_spent"`
-	FixedPending         int64            `json:"fixed_anlas_pending"`
-	FixedRemaining       int64            `json:"fixed_anlas_remaining"`
-	AllowPurchased       bool             `json:"allow_purchased_anlas"`
-	PurchasedLimit       int64            `json:"purchased_anlas_limit"`
-	PurchasedSpent       int64            `json:"purchased_anlas_spent"`
-	PurchasedPending     int64            `json:"purchased_anlas_pending"`
-	PurchasedRemaining   int64            `json:"purchased_anlas_remaining"`
-	AllowOpus            bool             `json:"allow_opus"`
-	AllowMultiImage      bool             `json:"allow_multi_image"`
-	ArchiveEnabled       bool             `json:"archive_enabled"`
-	OpusLimitMode        string           `json:"opus_limit_mode"`
-	OpusLimitPercent     float64          `json:"opus_limit_percent"`
-	OpusLimit            int64            `json:"opus_limit_images"`
-	OpusEffectiveLimit   int64            `json:"opus_effective_limit_images"`
-	OpusUsed             int64            `json:"opus_used_images"`
-	OpusPending          int64            `json:"opus_pending_images"`
-	OpusRemaining        int64            `json:"opus_remaining_images"`
-	OpusPredicted        bool             `json:"opus_predicted"`
-	OpusConfirmedAt      *time.Time       `json:"opus_confirmed_at,omitempty"`
-	OpusPendingByAccount map[string]int64 `json:"opus_pending_by_account,omitempty"`
-	OpusShareWarning     bool             `json:"opus_share_warning"`
-	QueueLimit           int              `json:"queue_limit"`
-	AllocatedAnlas       int64            `json:"allocated_anlas"`
-	SpentAnlas           int64            `json:"spent_anlas"`
-	PendingAnlas         int64            `json:"pending_anlas"`
-	RemainingAnlas       int64            `json:"remaining_anlas"`
-	QueueLength          int              `json:"queue_length"`
-	KeyQueueLength       int              `json:"key_queue_length"`
-	Revoked              bool             `json:"revoked"`
-	Key                  string           `json:"key,omitempty"`
+	ID                    string           `json:"id"`
+	Name                  string           `json:"name"`
+	AccountID             string           `json:"account_id"`
+	AccountName           string           `json:"account_name,omitempty"`
+	AllowFixed            bool             `json:"allow_fixed_anlas"`
+	FixedLimit            int64            `json:"fixed_anlas_limit"`
+	FixedSpent            int64            `json:"fixed_anlas_spent"`
+	FixedPending          int64            `json:"fixed_anlas_pending"`
+	FixedRemaining        int64            `json:"fixed_anlas_remaining"`
+	AllowPurchased        bool             `json:"allow_purchased_anlas"`
+	PurchasedLimit        int64            `json:"purchased_anlas_limit"`
+	PurchasedSpent        int64            `json:"purchased_anlas_spent"`
+	PurchasedPending      int64            `json:"purchased_anlas_pending"`
+	PurchasedRemaining    int64            `json:"purchased_anlas_remaining"`
+	AllowOpus             bool             `json:"allow_opus"`
+	AllowMultiImage       bool             `json:"allow_multi_image"`
+	ArchiveEnabled        bool             `json:"archive_enabled"`
+	OpusLimitMode         string           `json:"opus_limit_mode"`
+	OpusLimitPercent      float64          `json:"opus_limit_percent"`
+	OpusLimit             int64            `json:"opus_limit_images"`
+	OpusEffectiveLimit    int64            `json:"opus_effective_limit_images"`
+	OpusUsed              int64            `json:"opus_used_images"`
+	OpusPending           int64            `json:"opus_pending_images"`
+	OpusRemaining         int64            `json:"opus_remaining_images"`
+	OpusPredicted         bool             `json:"opus_predicted"`
+	OpusConfirmedAt       *time.Time       `json:"opus_confirmed_at,omitempty"`
+	OpusPendingByAccount  map[string]int64 `json:"opus_pending_by_account,omitempty"`
+	OpusShareWarning      bool             `json:"opus_share_warning"`
+	SuccessfulGenerations int64            `json:"successful_generations"`
+	SuccessfulImages      int64            `json:"successful_images"`
+	FormulaAnlas          int64            `json:"formula_anlas"`
+	QueueLimit            int              `json:"queue_limit"`
+	AllocatedAnlas        int64            `json:"allocated_anlas"`
+	SpentAnlas            int64            `json:"spent_anlas"`
+	PendingAnlas          int64            `json:"pending_anlas"`
+	RemainingAnlas        int64            `json:"remaining_anlas"`
+	QueueLength           int              `json:"queue_length"`
+	KeyQueueLength        int              `json:"key_queue_length"`
+	Revoked               bool             `json:"revoked"`
+	Key                   string           `json:"key,omitempty"`
 }
 
 func viewKey(k clientKey) publicKey {
@@ -60,6 +63,7 @@ func viewKey(k clientKey) publicKey {
 		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, ArchiveEnabled: !k.ArchiveDisabled, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
 		OpusLimitMode: opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
 		OpusPending: k.OpusPending, OpusRemaining: displayRemaining(opusRemaining(k)),
+		SuccessfulGenerations: k.SuccessfulGenerations, SuccessfulImages: k.SuccessfulImages, FormulaAnlas: k.FormulaAnlas,
 		QueueLimit:     keyQueueLimit(k),
 		AllocatedAnlas: allocatedAnlas(k),
 		SpentAnlas:     k.FixedSpent + k.PurchasedSpent,
@@ -143,17 +147,27 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/settings" && r.Method == http.MethodPut:
 		var input struct {
-			AllowMultiImage *bool   `json:"allow_multi_image"`
-			ArchiveEnabled  *bool   `json:"archive_enabled"`
-			ArchiveDays     *int    `json:"archive_retention_days"`
-			ArchiveMaxBytes *int64  `json:"archive_max_bytes"`
-			AdminUIPath     *string `json:"admin_ui_path"`
+			ChargePendingAsSpent *bool   `json:"charge_pending_as_spent"`
+			AllowMultiImage      *bool   `json:"allow_multi_image"`
+			ArchiveEnabled       *bool   `json:"archive_enabled"`
+			ArchiveDays          *int    `json:"archive_retention_days"`
+			ArchiveMaxBytes      *int64  `json:"archive_max_bytes"`
+			AdminUIPath          *string `json:"admin_ui_path"`
 		}
-		if err := decodeAdminBody(r, &input); err != nil || (input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil) {
+		if err := decodeAdminBody(r, &input); err != nil || (input.ChargePendingAsSpent == nil && input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil) {
 			http.Error(w, "invalid settings", http.StatusBadRequest)
 			return
 		}
+		release, err := h.enter(r.Context(), "", r.Method+" "+r.URL.Path, -1)
+		if err != nil {
+			h.queueError(w, err)
+			return
+		}
+		defer release()
 		next := h.settings.snapshot()
+		if input.ChargePendingAsSpent != nil {
+			next.ChargePendingAsSpent = *input.ChargePendingAsSpent
+		}
 		if input.AllowMultiImage != nil {
 			next.AllowMultiImage = *input.AllowMultiImage
 		}
@@ -177,7 +191,7 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid admin UI path", http.StatusBadRequest)
 			return
 		}
-		if err := h.settings.set(next); err != nil {
+		if err := h.settings.setWithAccounting(next, h.store); err != nil {
 			http.Error(w, "settings unavailable", http.StatusInternalServerError)
 			return
 		}
