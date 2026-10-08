@@ -45,6 +45,7 @@ type ManagedHandler struct {
 	jobs             *jobStore
 	db               *stateDB
 	archive          *archiveManager
+	logs             *requestLogStore
 	trustedProxies   []*net.IPNet
 	jobStaging       chan struct{}
 	queueMu          sync.Mutex
@@ -165,6 +166,7 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 		jobs:             jobs,
 		db:               db,
 		archive:          archive,
+		logs:             newRequestLogStore(cfg.StatePath, settings),
 		trustedProxies:   trusted,
 		jobStaging:       make(chan struct{}, 4),
 		queueSize:        cfg.QueueSize,
@@ -179,6 +181,7 @@ func NewManaged(cfg ManagedConfig) (*ManagedHandler, error) {
 	if err := h.restoreJobs(); err != nil {
 		return nil, fmt.Errorf("restore jobs: %w", err)
 	}
+	go h.logs.run()
 	return h, nil
 }
 
@@ -200,7 +203,7 @@ func (h *ManagedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images" && r.URL.Path != "/admin/images/ips" && r.URL.Path != "/admin/images/overview" && r.URL.Path != "/admin/usage/hours") {
+	if r.URL.EscapedPath() != r.URL.Path || (r.URL.RawQuery != "" && r.URL.Path != "/admin/images" && r.URL.Path != "/admin/images/ips" && r.URL.Path != "/admin/images/overview" && r.URL.Path != "/admin/usage/hours" && r.URL.Path != "/admin/logs") {
 		http.Error(w, "unsupported request target", http.StatusBadRequest)
 		return
 	}
@@ -629,20 +632,30 @@ func (h *ManagedHandler) queueError(w http.ResponseWriter, err error) {
 }
 
 func (h *ManagedHandler) serveJob(w http.ResponseWriter, r *http.Request, key clientKey, selected *route) {
+	w, r, finishLog := h.traceRequest(w, r, key)
 	if r.ContentLength > maxBodyBytes {
+		defer finishLog()
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	release, err := h.enter(r.Context(), key.ID, r.Method+" "+r.URL.Path, keyQueueLimit(key))
 	if err != nil {
+		defer finishLog()
 		h.queueError(w, err)
 		return
 	}
 	defer release()
+	defer finishLog()
 	h.executeJob(w, r, key, selected)
 }
 
 func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key clientKey, selected *route) {
+	w, r, finishLog := h.traceRequest(w, r, key)
+	defer finishLog()
+	trace := traceFor(r)
+	if trace != nil {
+		trace.entry.QueueMS = max(0, time.Since(trace.entry.CreatedAt).Milliseconds())
+	}
 	raw, _ := bearerToken(r)
 	currentKey, ok := h.store.find(raw)
 	if !ok || currentKey.ID != key.ID {
@@ -661,10 +674,14 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	trace.metadata(body, r.Header.Get("Content-Type"))
 	cost, err := estimateJob(selected.path, body, r.Header.Get("Content-Type"))
 	if err != nil {
 		http.Error(w, "unsupported request parameters: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	if trace != nil {
+		trace.entry.FormulaAnlas = cost.FormulaAnlas
 	}
 	if cost.MultiImage && !h.settings.snapshot().AllowMultiImage {
 		http.Error(w, "multi-image disabled in settings", http.StatusPaymentRequired)
@@ -748,6 +765,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		return
 	}
 	imageProxy := h.image
+	upstreamHost := h.imageURL.Host
 	if selectedAccount.provider() == providerNewAPI {
 		origin, err := parseUpstream(selectedAccount.Origin)
 		if err != nil {
@@ -755,7 +773,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 			return
 		}
 		imageProxy = newReverseProxy(origin, "/image", h.transport)
+		upstreamHost = origin.Host
 	}
+	trace.selected(selectedAccount, upstreamHost, selectedAccount.provider(), token, hold, cost)
 	var projectedOpus *float64
 	err = h.store.updateWithOpus(func(keys []clientKey, states map[string]opusAccountState) ([]clientKey, error) {
 		for i := range keys {
@@ -807,6 +827,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 		q.Fixed -= hold.Fixed
 		q.Purchased -= hold.Purchased
 	}
+	if trace != nil {
+		trace.entry.BillingState = "pending"
+	}
 	if projectedOpus != nil {
 		q.OpusProjected = projectedOpus
 	} else if cost.V5 {
@@ -836,6 +859,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	if capture != nil {
 		responseWriter = capture
 	}
+	if trace != nil {
+		trace.upstream = true
+	}
 	aborted := serveImageResponse(imageProxy, responseWriter, upstreamRequest)
 	if aborted {
 		// Settle the reservation before net/http terminates the response.
@@ -858,6 +884,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	streamRejected := tracked.stream != nil && tracked.stream.errorCode >= 400 && tracked.stream.errorCode < 500
 	refund := tracked.status >= 400 && tracked.status < 500 || tracked.status >= 200 && tracked.status < 300 && streamRejected
 	uncertain := !generated && !refund && (tracked.status < 200 || tracked.status >= 300 || !complete || tracked.stream != nil)
+	trace.settlement(tracked, generated, refund, uncertain, h.settings.snapshot().ChargePendingAsSpent, aborted || r.Context().Err() != nil)
 	if uncertain {
 		charge := h.settings.snapshot().ChargePendingAsSpent
 		slog.Warn("generation outcome uncertain", "key_id", key.ID, "route", selected.path, "status", tracked.status, "response_interrupted", aborted, "client_closed", r.Context().Err() != nil, "charge_pending_as_spent", charge)
@@ -918,6 +945,9 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	}
 	if err != nil {
 		slog.Error("generation accounting unavailable", "key_id", key.ID, "route", selected.path, "error", err)
+		if trace != nil {
+			trace.entry.Outcome, trace.entry.BillingState, trace.entry.ErrorSource, trace.entry.Error = "uncertain", "accounting_failed", "accounting", "accounting settlement failed"
+		}
 	}
 	if err == nil && generated {
 		if saveErr := h.db.recordGeneration(time.Now(), cost.Samples); saveErr != nil {

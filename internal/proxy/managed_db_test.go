@@ -90,7 +90,9 @@ func TestUnversionedSQLiteUpgradePreservesState(t *testing.T) {
 	if len(keys.keys) != 1 || keys.keys[0].FixedSpent != 17 || keys.keys[0].FixedPending != 3 || len(accounts.accounts) != 1 || len(jobs.jobs) != 1 {
 		t.Fatalf("state changed: keys=%+v accounts=%+v jobs=%+v", keys.keys, accounts.accounts, jobs.jobs)
 	}
-	if settings.data != (proxySettings{AllowMultiImage: true, ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console"}) {
+	expectedSettings := defaultProxySettings()
+	expectedSettings.AllowMultiImage = true
+	if settings.data != expectedSettings {
 		t.Fatalf("old settings defaults: %+v", settings.data)
 	}
 	var version, imageCount, indexCount int

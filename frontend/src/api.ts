@@ -139,7 +139,58 @@ export interface AdminSettings {
   archive_retention_days: number
   archive_max_bytes: number
   admin_ui_path: string
+  logs_enabled: boolean
+  log_retention_days: number
+  log_max_bytes: number
 }
+
+export interface RequestLog {
+  id: string
+  request_id: string
+  client_ip?: string
+  job_id?: string
+  created_at: string
+  completed_at: string
+  duration_ms: number
+  queue_ms: number
+  route: string
+  key_id: string
+  key_name: string
+  source_account_id: string
+  account_id?: string
+  account_name?: string
+  provider?: string
+  upstream_host?: string
+  model?: string
+  action?: string
+  width?: number
+  height?: number
+  steps?: number
+  n_samples?: number
+  strength?: number
+  upscaled_enhance: boolean
+  stream: boolean
+  multipart: boolean
+  use_new_shared_trial?: boolean
+  status: number
+  upstream_status?: number
+  stream_error_code?: number
+  outcome: string
+  error_source?: string
+  error?: string
+  interrupted: boolean
+  response_bytes: number
+  reserved_anlas: number
+  reserved_opus: number
+  formula_anlas: number
+  billing_state: string
+  key_fixed_remaining: number
+  key_purchased_remaining: number
+  key_opus_remaining: number
+}
+
+export interface RequestLogList { items: RequestLog[]; next_cursor?: string }
+export interface RequestLogStats { enabled: boolean; bytes: number; max_bytes: number; retention_days: number; files: number; failures: number; last_error: string }
 
 export interface ArchiveImage {
   id: string
@@ -220,6 +271,9 @@ async function request<T>(key: string, path: string, method = 'GET', body?: unkn
 }
 
 export const api = {
+  logs: (key: string, params: URLSearchParams) => request<RequestLogList>(key, `/admin/logs?${params}`),
+  logStats: (key: string) => request<RequestLogStats>(key, '/admin/logs/stats'),
+  clearLogs: (key: string) => request<void>(key, '/admin/logs', 'DELETE'),
   accounts: (key: string) => request<Account[]>(key, '/admin/accounts'),
   createAccount: (key: string, input: AccountInput) => request<Account>(key, '/admin/accounts', 'POST', input),
   updateAccount: (key: string, id: string, input: AccountInput) => request<Account>(key, `/admin/accounts/${id}`, 'PUT', input),

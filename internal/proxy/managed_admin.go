@@ -137,6 +137,8 @@ func decodeAdminBody(r *http.Request, dst any) error {
 
 func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/admin/logs" || r.URL.Path == "/admin/logs/stats":
+		h.serveAdminLogs(w, r)
 	case r.URL.Path == "/admin/usage/hours" && r.Method == http.MethodGet:
 		h.serveUsageHours(w, r)
 	case r.URL.Path == "/admin/images" || r.URL.Path == "/admin/images/stats" || strings.HasPrefix(r.URL.Path, "/admin/images/"):
@@ -153,8 +155,11 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 			ArchiveDays          *int    `json:"archive_retention_days"`
 			ArchiveMaxBytes      *int64  `json:"archive_max_bytes"`
 			AdminUIPath          *string `json:"admin_ui_path"`
+			LogsEnabled          *bool   `json:"logs_enabled"`
+			LogDays              *int    `json:"log_retention_days"`
+			LogMaxBytes          *int64  `json:"log_max_bytes"`
 		}
-		if err := decodeAdminBody(r, &input); err != nil || (input.ChargePendingAsSpent == nil && input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil) {
+		if err := decodeAdminBody(r, &input); err != nil || (input.ChargePendingAsSpent == nil && input.AllowMultiImage == nil && input.ArchiveEnabled == nil && input.ArchiveDays == nil && input.ArchiveMaxBytes == nil && input.AdminUIPath == nil && input.LogsEnabled == nil && input.LogDays == nil && input.LogMaxBytes == nil) {
 			http.Error(w, "invalid settings", http.StatusBadRequest)
 			return
 		}
@@ -183,6 +188,19 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		if input.AdminUIPath != nil {
 			next.AdminUIPath = *input.AdminUIPath
 		}
+		if input.LogsEnabled != nil {
+			next.LogsEnabled = *input.LogsEnabled
+		}
+		if input.LogDays != nil {
+			next.LogDays = *input.LogDays
+		}
+		if input.LogMaxBytes != nil {
+			next.LogMaxBytes = *input.LogMaxBytes
+		}
+		if !validLogRetention(next) {
+			http.Error(w, "invalid log retention", http.StatusBadRequest)
+			return
+		}
 		if next.ArchiveDays < -1 || next.ArchiveDays > 36500 || next.ArchiveMaxBytes < 1<<20 || next.ArchiveMaxBytes > 1<<40 {
 			http.Error(w, "invalid archive retention", http.StatusBadRequest)
 			return
@@ -196,6 +214,7 @@ func (h *ManagedHandler) serveAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.archive.signal()
+		_ = h.logs.prune()
 		jsonReply(w, http.StatusOK, h.settings.snapshot())
 	case r.URL.Path == "/admin/quota" && r.Method == http.MethodGet:
 		h.serveAdminQuota(w, r, false)

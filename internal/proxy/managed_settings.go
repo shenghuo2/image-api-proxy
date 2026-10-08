@@ -16,10 +16,13 @@ type proxySettings struct {
 	ArchiveDays          int    `json:"archive_retention_days"`
 	ArchiveMaxBytes      int64  `json:"archive_max_bytes"`
 	AdminUIPath          string `json:"admin_ui_path"`
+	LogsEnabled          bool   `json:"logs_enabled"`
+	LogDays              int    `json:"log_retention_days"`
+	LogMaxBytes          int64  `json:"log_max_bytes"`
 }
 
 func defaultProxySettings() proxySettings {
-	return proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console"}
+	return proxySettings{ArchiveDays: 30, ArchiveMaxBytes: 20 << 30, AdminUIPath: "/console", LogsEnabled: true, LogDays: 7, LogMaxBytes: 100 << 20}
 }
 
 func validAdminUIPath(path string) bool {
@@ -49,7 +52,7 @@ func decodeProxySettings(data []byte) (proxySettings, error) {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return proxySettings{}, err
 	}
-	if value.ArchiveDays < -1 || value.ArchiveDays > 36500 || value.ArchiveMaxBytes < 1<<20 || value.ArchiveMaxBytes > 1<<40 || !validAdminUIPath(value.AdminUIPath) {
+	if value.ArchiveDays < -1 || value.ArchiveDays > 36500 || value.ArchiveMaxBytes < 1<<20 || value.ArchiveMaxBytes > 1<<40 || !validLogRetention(value) || !validAdminUIPath(value.AdminUIPath) {
 		return proxySettings{}, errors.New("invalid proxy settings")
 	}
 	return value, nil
