@@ -63,6 +63,31 @@ button:disabled { cursor: not-allowed; }
 .page-section { padding-top: 25px; border-top: 1px solid #e1e6ec; }
 .page-section + .page-section { margin-top: 32px; }
 .settings-section { max-width: 760px; }
+.log-storage, .log-storage > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.log-storage { color: #687586; font-size: 12px; }
+.log-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.log-filters > label { display: grid; gap: 6px; color: #4c5b68; font-size: 12px; font-weight: 600; }
+.log-filters input:not([type=checkbox]), .log-filters select { min-width: 0; width: 100%; height: 37px; padding: 0 10px; border: 1px solid #d7dfe5; border-radius: 5px; background: #fff; color: #263540; font: inherit; }
+.log-filter-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.log-table { min-width: 1100px; }
+.log-table td { vertical-align: top; }
+.log-table small { display: block; font-size: 11px; color: #687586; margin-top: 5px; }
+.log-table code { font-size: 11px; }
+.log-error-summary { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-outcome { font-size: 12px; color: #b64b43; }
+.log-outcome.success { color: #267857; }
+.log-outcome.uncertain { color: #a26c16; }
+.log-pagination { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 20px; font-size: 12px; color: #687586; }
+.log-pagination button { padding: 7px 14px; border: 1px solid #d7dfe5; border-radius: 5px; background: #fff; cursor: pointer; }
+.log-pagination button:disabled { opacity: .5; cursor: default; }
+.log-details dl { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.log-details dl > div { min-width: 0; }
+.log-details dt { color: #687586; font-size: 11px; margin-bottom: 4px; }
+.log-details dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.log-error, .log-json { background: #f7f9fb; padding: 12px; border-radius: 5px; }
+.log-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.log-details summary { margin-top: 18px; cursor: pointer; }
+@media (max-width: 600px) { .log-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .log-details dl { grid-template-columns: 1fr; } }
 .settings-section .policy-row { background: #fff; border: 1px solid #e1e7ee; border-radius: 8px; padding: 18px 20px; }
 .settings-section .policy-row-top > div { min-width: 0; }
 .settings-section .policy-row-top small { line-height: 1.5; }

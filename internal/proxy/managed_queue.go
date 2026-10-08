@@ -147,6 +147,9 @@ func (h *ManagedHandler) finish(t *ticket) {
 
 // BeginDrain lets the active request finish and leaves durable waiters on disk.
 func (h *ManagedHandler) BeginDrain() {
+	if h.logs != nil {
+		h.logs.once.Do(func() { close(h.logs.stop) })
+	}
 	h.queueMu.Lock()
 	h.draining = true
 	for _, t := range h.waiting {

@@ -3,16 +3,17 @@ import { Button } from '@astryxdesign/core/Button'
 import {
   ArrowRight, BarChart3, Check, Clock3, Copy, CreditCard,
   KeyRound, LayoutDashboard, LockKeyhole, LogOut, Pencil, Plus,
-  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw, Users, ListOrdered, Images,
+  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2, X, Zap, Eye, RotateCw, Users, ListOrdered, Images, FileText,
 } from 'lucide-react'
 import { api, apiAddress, ApiError, type Account, type AccountQuota, type AdminQuota, type AdminSettings, type ArchiveStats, type ClientKey, type KeyPolicy } from './api'
 import { QueuePage } from './QueuePage'
 import { ArchivePage } from './ArchivePage'
+import { LogsPage } from './LogsPage'
 import { UsageHeatmap } from './UsageHeatmap'
 import { NumberInput } from './NumberInput'
 import { useAutoRefresh } from './useAutoRefresh'
 
-type View = 'overview' | 'queue' | 'accounts' | 'keys' | 'usage' | 'archive' | 'settings'
+type View = 'overview' | 'queue' | 'accounts' | 'keys' | 'usage' | 'archive' | 'logs' | 'settings'
 type DialogState =
   | { type: 'create' }
   | { type: 'edit'; key: ClientKey }
@@ -92,6 +93,7 @@ function Sidebar({ view, setView, quota, showArchive, onLogout }: { view: View; 
     { id: 'keys', label: '密钥管理', icon: <KeyRound size={18} /> },
     { id: 'usage', label: '用量统计', icon: <BarChart3 size={18} /> },
     { id: 'archive', label: '生成图库', icon: <Images size={18} /> },
+    { id: 'logs', label: '请求日志', icon: <FileText size={18} /> },
     { id: 'settings', label: '配置', icon: <Settings size={18} /> },
   ]
   return <aside className="sidebar">
@@ -222,6 +224,8 @@ function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings:
   const [days, setDays] = useSettingsDraft(settings?.archive_retention_days, 30)
   const [capacity, setCapacity] = useSettingsDraft(settings ? settings.archive_max_bytes / 1073741824 : undefined, 20)
   const [adminPath, setAdminPath] = useSettingsDraft(settings?.admin_ui_path, '/console')
+  const [logDays, setLogDays] = useSettingsDraft(settings?.log_retention_days, 7)
+  const [logCapacity, setLogCapacity] = useSettingsDraft(settings ? settings.log_max_bytes / 1048576 : undefined, 100)
   const validAdminPath = adminPath.length <= 128 && /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(adminPath) && !['admin', 'ai', 'image', 'user', 'quota', 'healthz', 'jobs'].includes(adminPath.split('/')[1])
   return <>
     <div className="page-intro"><div><span className="eyebrow">CONFIGURATION</span><h1>配置</h1></div></div>
@@ -237,6 +241,10 @@ function SettingsPage({ settings, busy, onChange, onSaveAdminPath }: { settings:
     </section>
     <section className="page-section settings-section"><div className="section-heading"><h2>计费核对</h2></div>
       <div className="policy-row"><div className="policy-row-top"><div><strong>待核对预留全部计费</strong><small>开启时立即将已有待核对预留计入本地预算，之后未确认的请求也按预留计费；不会重复扣减或增加成功次数。关闭后仅影响之后的请求。</small></div><label className="switch"><input type="checkbox" checked={settings?.charge_pending_as_spent ?? false} disabled={!settings || busy} onChange={(event) => onChange({ charge_pending_as_spent: event.target.checked })} aria-label="待核对预留全部计费" /><span /></label></div></div>
+    </section>
+    <section className="page-section settings-section"><div className="section-heading"><h2>请求日志</h2></div>
+      <div className="policy-row"><div className="policy-row-top"><div><strong>记录生成和图片工具请求</strong><small>记录参数、账号、错误原因和预算处理；不保存 key、提示词或图片内容</small></div><label className="switch"><input type="checkbox" checked={settings?.logs_enabled ?? true} disabled={!settings || busy} onChange={(event) => onChange({ logs_enabled: event.target.checked })} aria-label="开启请求日志" /><span /></label></div></div>
+      <form className="archive-settings" onSubmit={(event) => { event.preventDefault(); onChange({ log_retention_days: logDays, log_max_bytes: Math.round(logCapacity * 1048576) }) }}><label>保留天数（-1 不限）<NumberInput min="-1" max="36500" step="1" value={logDays} disabled={!settings || busy} onChange={setLogDays} required /></label><label>容量上限（MiB）<NumberInput min="1" max="1024" step="1" value={logCapacity} disabled={!settings || busy} onChange={setLogCapacity} required /></label><button type="submit" disabled={!settings || busy || logDays === 0}>保存日志策略</button></form>
     </section>
     <section className="page-section settings-section"><div className="section-heading"><h2>图片归档</h2></div>
       <div className="policy-row"><div className="policy-row-top"><div><strong>归档成功生成的图片</strong><small>保存原始 PNG 与小于 100 KiB 的 JPEG 缩略图</small></div><label className="switch"><input type="checkbox" checked={settings?.archive_enabled ?? false} disabled={!settings || busy} onChange={(event) => onChange({ archive_enabled: event.target.checked })} aria-label="开启图片归档" /><span /></label></div></div>
@@ -483,7 +491,7 @@ export function App() {
   return <div className="app-shell">
     <Sidebar view={view} setView={setView} quota={quota} showArchive={showArchive} onLogout={logout} />
     <div className="main-shell">
-      <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'queue' ? '任务队列' : view === 'accounts' ? '账号管理' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : view === 'archive' ? '生成图库' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
+      <header className="topbar"><div className="breadcrumb">工作区 <span>/</span> {view === 'overview' ? '概览' : view === 'queue' ? '任务队列' : view === 'accounts' ? '账号管理' : view === 'keys' ? '密钥管理' : view === 'usage' ? '用量统计' : view === 'archive' ? '生成图库' : view === 'logs' ? '请求日志' : '配置'}</div><div className="topbar-right"><span className="topbar-time">{updatedAt ? `同步于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '正在连接'}</span><IconAction label="刷新面板数据" icon={<RefreshCw size={17} className={loading ? 'spin' : ''} />} onClick={() => void load(adminKey)} disabled={loading} /><span className="topbar-separator" /><span className="admin-chip"><ShieldCheck size={15} /> 管理员</span></div></header>
       <main className="content">
         {error && <div className="inline-alert page-alert" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="关闭错误"><X size={16} /></button></div>}
         {view === 'overview' && <Overview keys={keys} quota={quota} quotaError={quotaError} onRefreshQuota={() => void refreshQuota()} refreshingQuota={refreshingQuota} setView={setView} onCreate={startCreateKey} />}
@@ -492,6 +500,7 @@ export function App() {
         {view === 'keys' && <KeysPage keys={keys} onCreate={startCreateKey} onEdit={(key) => setDialog({ type: 'edit', key })} onReconcile={(key) => setDialog({ type: 'reconcile', key })} onRevoke={(key) => setDialog({ type: 'revoke', key })} onReveal={(key) => { if (key.key) { setCopied(false); setDialog({ type: 'reveal', key: key.key, name: key.name }) } }} onRotate={(key) => setDialog({ type: 'rotate', key })} />}
         {view === 'usage' && <UsagePage keys={keys} adminKey={adminKey} />}
         {view === 'archive' && showArchive && <ArchivePage adminKey={adminKey} keys={keys} onStatsChange={setArchiveStats} />}
+        {view === 'logs' && <LogsPage adminKey={adminKey} keys={keys} accounts={accounts} onAuthFailure={logout} />}
         {view === 'settings' && <SettingsPage settings={settings} busy={busy} onChange={(changes) => void changeSettings(changes)} onSaveAdminPath={changeAdminPath} />}
       </main>
     </div>

@@ -12,13 +12,14 @@ import (
 // received just before the downstream client closes its connection.
 // It keeps only one frame at a time and never changes the upstream response.
 type streamOutcome struct {
-	header    [4]byte
-	headerLen int
-	frame     []byte
-	frameLen  int
-	final     bool
-	invalid   bool
-	errorCode int
+	header       [4]byte
+	headerLen    int
+	frame        []byte
+	frameLen     int
+	final        bool
+	invalid      bool
+	errorCode    int
+	errorMessage string
 }
 
 func (s *streamOutcome) write(data []byte) {
@@ -50,6 +51,11 @@ func (s *streamOutcome) write(data []byte) {
 		}
 		if code, ok := message["code"]; ok && code != nil && fmt.Sprint(code) != "200" {
 			s.errorCode, _ = strconv.Atoi(fmt.Sprint(code))
+			if text, ok := message["message"].(string); ok {
+				s.errorMessage = text[:min(len(text), 4096)]
+			} else if text, ok := message["error"].(string); ok {
+				s.errorMessage = text[:min(len(text), 4096)]
+			}
 			s.invalid = true
 			return
 		}

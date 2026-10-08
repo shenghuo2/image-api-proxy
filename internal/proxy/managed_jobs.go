@@ -566,6 +566,7 @@ func (h *ManagedHandler) runDurableJob(t *ticket, id string) {
 		return
 	}
 	request.Header.Set("Authorization", "Bearer "+raw)
+	request = request.WithContext(context.WithValue(request.Context(), requestLogQueuedAtKey{}, job.QueuedAt))
 	request.Header.Set("Content-Type", job.ContentType)
 	if job.Accept != "" {
 		request.Header.Set("Accept", job.Accept)

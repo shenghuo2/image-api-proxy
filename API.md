@@ -87,6 +87,9 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 | `GET /admin/queue` | 读取当前执行请求、等待池顺序、持久化任务 ID、请求来源 key 名称及全局等待容量；只读取本地队列，不请求官方额度 |
 | `GET /admin/usage/hours` | 最近至多 8 天的成功生成时间桶，供“用量统计”热力图使用 |
 | `GET /admin/settings` | 查看全局多图、归档及管理页面路径设置 |
+| `GET /admin/logs` | 查询生成和图片工具请求日志，支持过滤和游标分页 |
+| `GET /admin/logs/stats` | 查看日志空间、保留策略与写入/清理失败情况 |
+| `DELETE /admin/logs` | 清空请求日志，不接受过滤参数，不改变用量统计 |
 | `PUT /admin/settings` | 部分更新设置，例如 `{"archive_enabled":true,"archive_retention_days":-1,"archive_max_bytes":21474836480}` 或 `{"admin_ui_path":"/private/console"}` |
 | `GET /admin/images` | 按 `key_id`、重复的 `ip` 或 `exclude_ip`、`from`、`to`、`page` 筛选归档；固定每页 24 张 |
 | `GET /admin/images/stats` | 返回图片数、占用字节、待处理数、失败次数和最近错误 |
@@ -127,6 +130,24 @@ curl -H "Authorization: Bearer $CLIENT_KEY" "$BASE/user/subscription"
 管理面板的逐 key 统计由 `GET /admin/keys` 的累计字段计算：已计入用量分别为 `fixed_anlas_spent - fixed_anlas_pending`、`purchased_anlas_spent - purchased_anlas_pending` 和 `opus_used_images - opus_pending_images`。待核对量单独显示。`successful_generations` 为已确认成功的请求次数，`successful_images` 为这些请求的图片张数，均包含消耗 Anlas 与使用 Opus 的生成；一次多图只计 1 次请求。`formula_anlas` 为成功请求按官方公式计算、未扣除免费额度的参考点数。上述累计字段从支持它们的版本开始记录，旧版未记录的成功请求无法准确回填。
 
 `PUT /admin/settings` 支持 `charge_pending_as_spent`（默认 `false`）。设为 `true` 会立即把所有 key 已有待核对预留（包括 Anlas 和 Opus 逐账号预留）提交为本地计费，并使之后无法确认结果的请求自动按预留值计费。预留已经包含在 spent/used 中，提交仅清除 pending，不重复扣减、不退款，也不增加成功生成次数。设置和已有预留在一个 SQLite 事务中提交，并等待当前 FIFO 请求结束；重启后仍会提交遗留预留。改回 `false` 只影响之后的未确认请求，不能恢复已提交的待核对状态。此选项是本地预算估算策略，不能证明上游实际扣费。
+
+## 请求日志
+
+请求日志默认开启，保留 7 个 UTC 日期（含当天），最多占用 100 MiB。`PUT /admin/settings` 支持 `logs_enabled`、`log_retention_days`（1–36500 或 `-1` 不限日期）和 `log_max_bytes`（1 MiB 至 1 GiB）。空间按日志文件字节数计算，按日期及容量轮转，超限前删除最旧日志段；每段最多 1 MiB。启动、写入、读取、策略变更及每小时维护都会清理。关闭记录后，已有日志仍按保留策略清理。
+
+记录已认证的生成及图片工具请求，包括代理参数拒绝、排队失败、上游 HTTP 错误、HTTP 200 中的流内错误、连接中断与持久化任务执行。日志包含路径、key 的 ID/名称、绑定及实际账号、上游主机、模型、action、宽高、steps、n_samples、strength、Max/stream/multipart/shared-trial 标记、耗时、排队时间、状态码、脱敏错误及请求结束时的预算处理。预算预留及公式参考值仍是本地估算，不代表上游实际扣费。生成响应包含 `X-Proxy-Request-Id`，可用它查找对应日志；持久化执行记录另含 `job_id`。
+
+日志不保存认证头、实际 key/Token、提示词、图片或完整请求/成功响应；只截取最多 4 KiB 的错误信息，再脱敏并限制为约 2 KiB。文件位于 `PROXY_STATE_PATH` 对应的 `.logs/` 目录，以 0600 权限保存 JSONL，目录权限为 0700。日志故障不阻止生成或改变计费，管理员可在日志统计中查看故障原因；重启后继续读取历史，未完成的最后一行不会作为日志展示。
+
+`GET /admin/logs` 支持 `key_id`、`account_id`（实际账号）、`route`、HTTP `status`、`errors_only=true`、`q`（错误/模型/请求 ID/任务 ID）、`from`/`to`（RFC3339 时间）、`limit`（1–200，默认 50）和 `before`（上一页返回的 `next_cursor`）。返回 `{ "items": [...], "next_cursor": "..." }`，按记录写入顺序从新到旧；没有下一页时省略游标。HTTP 200 的流内错误使用 `stream_error_code` 单独标记，`errors_only` 会包含它及未确认结果。管理面板“请求日志”支持查询、查看/复制详情、导出当前页和清空；仅最新页在未打开详情时每 5 秒自动刷新。
+
+```bash
+curl -X PUT "$BASE/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"logs_enabled":true,"log_retention_days":7,"log_max_bytes":104857600}'
+curl "$BASE/admin/logs?errors_only=true&limit=50" \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
 
 ## 图片归档
 
