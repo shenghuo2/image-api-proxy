@@ -15,6 +15,7 @@ export interface ClientKey {
   purchased_anlas_remaining: number
   allow_opus: boolean
   allow_multi_image: boolean
+  allow_fallback_high_steps: boolean
   archive_enabled: boolean
   opus_limit_mode: 'images' | 'percent'
   opus_limit_percent: number
@@ -125,6 +126,7 @@ export interface KeyPolicy {
   purchased_anlas_limit: number
   allow_opus: boolean
   allow_multi_image: boolean
+  allow_fallback_high_steps: boolean
   archive_enabled: boolean
   opus_limit_mode: 'images' | 'percent'
   opus_limit_percent: number

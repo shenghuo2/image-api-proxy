@@ -10,46 +10,47 @@ import (
 )
 
 type publicKey struct {
-	ID                    string           `json:"id"`
-	Name                  string           `json:"name"`
-	AccountID             string           `json:"account_id"`
-	AccountName           string           `json:"account_name,omitempty"`
-	AllowFixed            bool             `json:"allow_fixed_anlas"`
-	FixedLimit            int64            `json:"fixed_anlas_limit"`
-	FixedSpent            int64            `json:"fixed_anlas_spent"`
-	FixedPending          int64            `json:"fixed_anlas_pending"`
-	FixedRemaining        int64            `json:"fixed_anlas_remaining"`
-	AllowPurchased        bool             `json:"allow_purchased_anlas"`
-	PurchasedLimit        int64            `json:"purchased_anlas_limit"`
-	PurchasedSpent        int64            `json:"purchased_anlas_spent"`
-	PurchasedPending      int64            `json:"purchased_anlas_pending"`
-	PurchasedRemaining    int64            `json:"purchased_anlas_remaining"`
-	AllowOpus             bool             `json:"allow_opus"`
-	AllowMultiImage       bool             `json:"allow_multi_image"`
-	ArchiveEnabled        bool             `json:"archive_enabled"`
-	OpusLimitMode         string           `json:"opus_limit_mode"`
-	OpusLimitPercent      float64          `json:"opus_limit_percent"`
-	OpusLimit             int64            `json:"opus_limit_images"`
-	OpusEffectiveLimit    int64            `json:"opus_effective_limit_images"`
-	OpusUsed              int64            `json:"opus_used_images"`
-	OpusPending           int64            `json:"opus_pending_images"`
-	OpusRemaining         int64            `json:"opus_remaining_images"`
-	OpusPredicted         bool             `json:"opus_predicted"`
-	OpusConfirmedAt       *time.Time       `json:"opus_confirmed_at,omitempty"`
-	OpusPendingByAccount  map[string]int64 `json:"opus_pending_by_account,omitempty"`
-	OpusShareWarning      bool             `json:"opus_share_warning"`
-	SuccessfulGenerations int64            `json:"successful_generations"`
-	SuccessfulImages      int64            `json:"successful_images"`
-	FormulaAnlas          int64            `json:"formula_anlas"`
-	QueueLimit            int              `json:"queue_limit"`
-	AllocatedAnlas        int64            `json:"allocated_anlas"`
-	SpentAnlas            int64            `json:"spent_anlas"`
-	PendingAnlas          int64            `json:"pending_anlas"`
-	RemainingAnlas        int64            `json:"remaining_anlas"`
-	QueueLength           int              `json:"queue_length"`
-	KeyQueueLength        int              `json:"key_queue_length"`
-	Revoked               bool             `json:"revoked"`
-	Key                   string           `json:"key,omitempty"`
+	ID                     string           `json:"id"`
+	Name                   string           `json:"name"`
+	AccountID              string           `json:"account_id"`
+	AccountName            string           `json:"account_name,omitempty"`
+	AllowFixed             bool             `json:"allow_fixed_anlas"`
+	FixedLimit             int64            `json:"fixed_anlas_limit"`
+	FixedSpent             int64            `json:"fixed_anlas_spent"`
+	FixedPending           int64            `json:"fixed_anlas_pending"`
+	FixedRemaining         int64            `json:"fixed_anlas_remaining"`
+	AllowPurchased         bool             `json:"allow_purchased_anlas"`
+	PurchasedLimit         int64            `json:"purchased_anlas_limit"`
+	PurchasedSpent         int64            `json:"purchased_anlas_spent"`
+	PurchasedPending       int64            `json:"purchased_anlas_pending"`
+	PurchasedRemaining     int64            `json:"purchased_anlas_remaining"`
+	AllowOpus              bool             `json:"allow_opus"`
+	AllowMultiImage        bool             `json:"allow_multi_image"`
+	AllowFallbackHighSteps bool             `json:"allow_fallback_high_steps"`
+	ArchiveEnabled         bool             `json:"archive_enabled"`
+	OpusLimitMode          string           `json:"opus_limit_mode"`
+	OpusLimitPercent       float64          `json:"opus_limit_percent"`
+	OpusLimit              int64            `json:"opus_limit_images"`
+	OpusEffectiveLimit     int64            `json:"opus_effective_limit_images"`
+	OpusUsed               int64            `json:"opus_used_images"`
+	OpusPending            int64            `json:"opus_pending_images"`
+	OpusRemaining          int64            `json:"opus_remaining_images"`
+	OpusPredicted          bool             `json:"opus_predicted"`
+	OpusConfirmedAt        *time.Time       `json:"opus_confirmed_at,omitempty"`
+	OpusPendingByAccount   map[string]int64 `json:"opus_pending_by_account,omitempty"`
+	OpusShareWarning       bool             `json:"opus_share_warning"`
+	SuccessfulGenerations  int64            `json:"successful_generations"`
+	SuccessfulImages       int64            `json:"successful_images"`
+	FormulaAnlas           int64            `json:"formula_anlas"`
+	QueueLimit             int              `json:"queue_limit"`
+	AllocatedAnlas         int64            `json:"allocated_anlas"`
+	SpentAnlas             int64            `json:"spent_anlas"`
+	PendingAnlas           int64            `json:"pending_anlas"`
+	RemainingAnlas         int64            `json:"remaining_anlas"`
+	QueueLength            int              `json:"queue_length"`
+	KeyQueueLength         int              `json:"key_queue_length"`
+	Revoked                bool             `json:"revoked"`
+	Key                    string           `json:"key,omitempty"`
 }
 
 func viewKey(k clientKey) publicKey {
@@ -61,7 +62,8 @@ func viewKey(k clientKey) publicKey {
 		PurchasedSpent: k.PurchasedSpent, PurchasedPending: k.PurchasedPending,
 		PurchasedRemaining: displayRemaining(purchasedRemaining(k)),
 		AllowOpus:          k.AllowOpus, AllowMultiImage: k.AllowMultiImage, ArchiveEnabled: !k.ArchiveDisabled, OpusLimit: k.OpusLimit, OpusUsed: k.OpusUsed,
-		OpusLimitMode: opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
+		AllowFallbackHighSteps: k.AllowFallbackHighSteps,
+		OpusLimitMode:          opusMode(k), OpusLimitPercent: k.OpusLimitPercent, OpusEffectiveLimit: opusEffectiveLimit(k),
 		OpusPending: k.OpusPending, OpusRemaining: displayRemaining(opusRemaining(k)),
 		SuccessfulGenerations: k.SuccessfulGenerations, SuccessfulImages: k.SuccessfulImages, FormulaAnlas: k.FormulaAnlas,
 		QueueLimit:     keyQueueLimit(k),

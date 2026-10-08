@@ -112,17 +112,19 @@ curl -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
 
 `allow_multi_image` 是逐 key 的单次多图权限。必须先打开全局同名配置才能为新 key 开启；旧账本及新 key 默认关闭。关闭全局配置时已有 key 的授权记录保留，但多图请求立即不可用。
 
+`allow_fallback_high_steps` 是逐 key 的官方高步数补充权限，新 key 及缺少此字段的旧 key 默认 `false`。可在 `POST /admin/keys` 或 `PUT /admin/keys/{id}` 设置，更新时省略则保留现值，`GET /admin/keys` 和客户端 `/quota` 均返回此字段。可先保存 key 的授权，实际生效还需所选中转账号开启 `fallback_high_steps` 并配置启用的备用官方账号。账号池 key 的授权作用于池中的中转账号；直接使用官方账号按原权限生成。
+
 `queue_limit` 设置每把 key 同时占用的**等待位置数**，不计正在执行的请求。`-1` 表示不设逐 key 上限（旧 key 和新 key 默认值），`0` 表示该 key 只能在队列空闲时立即执行，正整数最多为 10000。修改上限只影响后续入队，不会踢出已经等待的请求。所有 key 仍受全局 `PROXY_QUEUE_SIZE` 限制。客户端 `/quota` 返回 `queue_limit`、全局 `queue_length` 和该 key 的 `key_queue_length`。
 
 `account_id` 选择上游账号。新 key 默认 `pool`，每次生成从已启用账号依次轮询，跳过额度不足或暂不可用的账号；也可指定 `GET /admin/accounts` 返回的账号 ID 进行固定绑定。停用账号后，池不会再选它，固定绑定的 key 在重新启用前不可生成。旧账本中没有 `account_id` 的 key 继续绑定 `default` 账号；已有用量的 key 不允许更换账号策略。所有账号共用同一条 FIFO 队列，不会跨账号并发转发。账号 Token 在服务端加密保存；更换管理员密钥后需重新录入无法解密的账号 Token。
 
 中转站账号示例：`{"name":"中转站","provider":"new_api","origin":"https://momo.bailan.shop","token":"<中转站 Key>","enabled_models":["nai-diffusion-4-5-full","nai-diffusion-4-5-curated","nai-diffusion-5-full","nai-diffusion-5-curated"],"fallback_account_id":"default","fallback_high_steps":false}`。`origin` 必须是无路径、查询或凭据的 HTTP(S) 根地址。中转站不提供可信的官方余额或 Opus 快照；`GET /admin/quota` 的官方汇总只包含可查询的官方账号，`account_quotas` 对中转站返回 `upstream_balance_known:false` 及空余额。混合账号池的预算无法归属到某个上游，单列在 `unattributed_pool_fixed_anlas` 和 `unattributed_pool_purchased_anlas`。允许的 Anlas 上限作为本地预算；账号池只会把已启用模型的文生图请求交给中转站。4.5 Full 的流式路由可能被该站以 402 拒绝，代理不会回退到普通路由。
 
-`fallback_account_id` 可在创建或编辑中转站账号时指定，省略时保留原配置，设为 `""` 则关闭备用账号。目标必须是已启用的 NovelAI 官方账号；禁止指向其他中转站、账号池或自身。`/ai/upscale`、`/ai/encode-vibe`、`/ai/augment-image` 及其 `/image` 别名使用备用账号；生成接口中的非 `generate` action、主输入 `image`/`mask`、`upscaled_enhance:true` 或 `-inpainting` 模型也使用备用账号。Vibe 和导演参考图不会被当作主输入图片。生成模型开关仍有效；不在启用列表中的模型不会通过备用账号放行。普通文生图的大尺寸仍使用中转站，超过 28 steps 按该账号的 `fallback_high_steps` 决定。需要备用账号而未配置或备用账号停用时返回 503；停用中转账号也会停止其固定 key 的全部生成。
+`fallback_account_id` 可在创建或编辑中转站账号时指定，省略时保留原配置，设为 `""` 则关闭备用账号。目标必须是已启用的 NovelAI 官方账号；禁止指向其他中转站、账号池或自身。`/ai/upscale`、`/ai/encode-vibe`、`/ai/augment-image` 及其 `/image` 别名使用备用账号；生成接口中的非 `generate` action、主输入 `image`/`mask`、`upscaled_enhance:true` 或 `-inpainting` 模型也使用备用账号。Vibe 和导演参考图不会被当作主输入图片。生成模型开关仍有效；不在启用列表中的模型不会通过备用账号放行。普通文生图的大尺寸仍使用中转站，超过 28 steps 的官方补充需账号 `fallback_high_steps` 与 key 的 `allow_fallback_high_steps` 同时开启。需要备用账号而未配置或备用账号停用时返回 503；停用中转账号也会停止其固定 key 的全部生成。
 
 分流在转发和预留前完成，使用原 key 的点数权限、上限及统计；备用官方账号按官方账号的保守预留和 Opus 规则记账。配置备用账号后，固定中转站 key 可显式启用 `allow_opus`，按次数或比例授权备用官方账号的免费额度；中转站请求继续扣本地点数预算。比例份额与直接绑定该官方账号的 key 共同受 100% 上限约束，余额与待核对量保存在该官方账号的 Opus bucket 中。未授权 Opus 时，符合官方免费条件的请求会被配额校验拒绝。`/user/subscription` 的点数仍是本地预算；已授权的备用账号 Opus 使用缓存快照展示。修改或移除备用账号前须关闭其固定 key 的 Opus 并核对待处理 Opus；被引用的备用账号不能删除，`GET /admin/accounts` 的 `fallback_reference_count` 返回引用数量。上游已经收到请求后发生 4xx、5xx 或断连时不会切换账号重发。
 
-中转站账号的 `fallback_high_steps` 默认 `false`，可在 `POST /admin/accounts` 或 `PUT /admin/accounts/{id}` 设置；更新时省略则保留现值。开启需已配置启用的备用官方账号，29–50 steps 的生成会在转发前使用该账号。关闭时，高步数文生图继续使用中转站；超过 28 steps 的图生图、重绘及 Enhance 不允许使用备用账号，返回 503 且不预留预算。移除备用账号会清除此权限；直接使用官方账号不受此开关限制。普通接口、`/image` 别名、multipart、持久化任务和账号池采用相同分流规则，始终受 1–50 steps 参数范围限制。超分、编码及导演工具自身的路由不受此开关影响。旧版全局 `allow_high_steps` 已移除，存量配置不会自动授权备用账号的高步数生成。
+中转站账号的 `fallback_high_steps` 是账号总开关，默认 `false`，可在 `POST /admin/accounts` 或 `PUT /admin/accounts/{id}` 设置；更新时省略则保留现值。开启需已配置启用的备用官方账号，且 key 已授权 `allow_fallback_high_steps` 时，29–50 steps 的生成会在转发前使用该账号。任一权限关闭时，高步数文生图继续使用中转站；超过 28 steps 的图生图、重绘及 Enhance 不允许使用备用账号，返回 503 且不预留预算。移除备用账号会清除账号总开关；关闭总开关保留 key 的授权记录。直接使用官方账号不受这两个补充权限限制。普通接口、`/image` 别名、multipart、持久化任务和账号池采用相同分流规则，始终受 1–50 steps 参数范围限制。超分、编码及导演工具自身的路由不受此开关影响。旧版全局 `allow_high_steps` 已移除，升级不会自动为旧 key 授权官方高步数补充。
 
 签发或提高有限分配额时，代理使用各账号缓存的预计余额校验：固定 key 的剩余分配额不超过对应账号余额，池 key 的剩余分配额不超过已启用且可用账号扣除固定分配后的总余额。无限额度不预留固定点数，多把无限 key 可共享官方剩余额；管理统计中的 `unlimited_*_keys` 显示此类 key 数量，`unallocated_*` 只计算有限分配。旧版 `allocation_anlas` 仍可作为订阅点数上限的简写，旧账本也会映射为订阅点数策略。旧哈希 key 仍有效但无法显示明文，可通过轮换转换成新格式。NovelAI 决定实际先扣哪一类 Anlas，代理无法指定官方的扣费来源；这两个开关和上限控制的是**本地预算分类**，不是官方子账户。
 

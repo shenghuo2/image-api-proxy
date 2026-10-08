@@ -397,9 +397,10 @@ func (h *ManagedHandler) accountCandidatesForJob(k clientKey, path string, cost 
 			if cost.Model != "" && !supported {
 				continue
 			}
-			if cost.RequiresOfficial || !supported || cost.Steps > 28 && account.FallbackHighSteps {
-				// This permission covers all generation using the relay's official fallback.
-				if cost.Steps > 28 && !account.FallbackHighSteps {
+			allowHighStepFallback := account.FallbackHighSteps && k.AllowFallbackHighSteps
+			if cost.RequiresOfficial || !supported || cost.Steps > 28 && allowHighStepFallback {
+				// Official high-step fallback requires both account and key authorization.
+				if cost.Steps > 28 && !allowHighStepFallback {
 					continue
 				}
 				fallback, ok := h.accounts.find(account.FallbackAccountID)

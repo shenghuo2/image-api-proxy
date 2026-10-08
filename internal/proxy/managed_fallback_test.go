@@ -333,62 +333,70 @@ func TestRelayFallbackOpusPermissionAndAccountShares(t *testing.T) {
 
 func TestRelayHighStepsFallbackRouting(t *testing.T) {
 	f := newFallbackTestProxy(t, 2)
-	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 5000})
-	for _, enabled := range []bool{false, true} {
-		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
-		for _, steps := range []int{28, 29, 50, 51} {
-			for _, route := range []string{"/ai/generate-image", "/ai/generate-image-stream", "/image/ai/generate-image", "/image/ai/generate-image-stream"} {
-				for _, action := range []string{"generate", "img2img", "enhance"} {
-					body := fallbackTestGeneration(action, steps)
-					before, _ := f.h.store.find(key)
-					count := len(f.snapshot())
-					code := http.StatusOK
-					if steps > 50 {
-						code = http.StatusBadRequest
-					} else if steps > 28 && action != "generate" && !enabled {
-						code = http.StatusServiceUnavailable
-					}
-					f.send(t, managedRequest(t, "POST", f.url+route, key, body), code)
-					if code != http.StatusOK {
-						after, _ := f.h.store.find(key)
-						if len(f.snapshot()) != count || after.FixedSpent != before.FixedSpent || after.FixedPending != before.FixedPending || after.SuccessfulGenerations != before.SuccessfulGenerations {
-							t.Fatalf("blocked request changed usage: enabled=%v steps=%d action=%s route=%s", enabled, steps, action, route)
+	key, keyID := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 5000})
+	for _, keyAllowed := range []bool{false, true} {
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/keys/"+keyID, testAdminKey, map[string]any{"allow_fallback_high_steps": keyAllowed}), http.StatusOK)
+		for _, enabled := range []bool{false, true} {
+			allowed := enabled && keyAllowed
+			doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
+			for _, steps := range []int{28, 29, 50, 51} {
+				for _, route := range []string{"/ai/generate-image", "/ai/generate-image-stream", "/image/ai/generate-image", "/image/ai/generate-image-stream"} {
+					for _, action := range []string{"generate", "img2img", "enhance"} {
+						body := fallbackTestGeneration(action, steps)
+						before, _ := f.h.store.find(key)
+						count := len(f.snapshot())
+						code := http.StatusOK
+						if steps > 50 {
+							code = http.StatusBadRequest
+						} else if steps > 28 && action != "generate" && !allowed {
+							code = http.StatusServiceUnavailable
 						}
-						continue
-					}
-					provider := providerNewAPI
-					if action != "generate" || steps > 28 && enabled {
-						provider = providerNovelAI
-					}
-					calls := f.snapshot()
-					got := calls[len(calls)-1]
-					want, _ := json.Marshal(body)
-					if len(calls) != count+1 || got.provider != provider || got.path != strings.TrimPrefix(route, "/image") || !bytes.Equal(got.body, want) {
-						t.Fatalf("wrong high-step routing: enabled=%v steps=%d action=%s route=%s got=%+v", enabled, steps, action, route, got)
+						f.send(t, managedRequest(t, "POST", f.url+route, key, body), code)
+						if code != http.StatusOK {
+							after, _ := f.h.store.find(key)
+							if len(f.snapshot()) != count || after.FixedSpent != before.FixedSpent || after.FixedPending != before.FixedPending || after.SuccessfulGenerations != before.SuccessfulGenerations {
+								t.Fatalf("blocked request changed usage: enabled=%v steps=%d action=%s route=%s", enabled, steps, action, route)
+							}
+							continue
+						}
+						provider := providerNewAPI
+						if action != "generate" || steps > 28 && allowed {
+							provider = providerNovelAI
+						}
+						calls := f.snapshot()
+						got := calls[len(calls)-1]
+						want, _ := json.Marshal(body)
+						if len(calls) != count+1 || got.provider != provider || got.path != strings.TrimPrefix(route, "/image") || !bytes.Equal(got.body, want) {
+							t.Fatalf("wrong high-step routing: enabled=%v steps=%d action=%s route=%s got=%+v", enabled, steps, action, route, got)
+						}
 					}
 				}
 			}
 		}
 	}
 	// Other image-operation markers cannot bypass the high-step permission.
-	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": false}), http.StatusOK)
-	for _, marker := range []string{"image", "mask", "upscaled_enhance", "inpainting"} {
-		body := fallbackTestGeneration("generate", 29)
-		if marker == "inpainting" {
-			body["model"] = "nai-diffusion-5-full-inpainting"
-		} else if marker == "upscaled_enhance" {
-			body["parameters"].(map[string]any)[marker] = true
-		} else {
-			body["parameters"].(map[string]any)[marker] = "input-image"
-		}
-		count := len(f.snapshot())
-		f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image-stream", key, body), http.StatusServiceUnavailable)
-		if len(f.snapshot()) != count {
-			t.Fatal("image marker bypassed high-step fallback permission")
+	for _, permissions := range [][2]bool{{false, true}, {true, false}} {
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": permissions[0]}), http.StatusOK)
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/keys/"+keyID, testAdminKey, map[string]any{"allow_fallback_high_steps": permissions[1]}), http.StatusOK)
+		for _, marker := range []string{"image", "mask", "upscaled_enhance", "inpainting"} {
+			body := fallbackTestGeneration("generate", 29)
+			if marker == "inpainting" {
+				body["model"] = "nai-diffusion-5-full-inpainting"
+			} else if marker == "upscaled_enhance" {
+				body["parameters"].(map[string]any)[marker] = true
+			} else {
+				body["parameters"].(map[string]any)[marker] = "input-image"
+			}
+			count := len(f.snapshot())
+			f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image-stream", key, body), http.StatusServiceUnavailable)
+			if len(f.snapshot()) != count {
+				t.Fatal("image marker bypassed high-step fallback permission")
+			}
 		}
 	}
 	// High-step official requests still respect the relay's model switches.
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
+	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/keys/"+keyID, testAdminKey, map[string]any{"allow_fallback_high_steps": true}), http.StatusOK)
 	blocked := fallbackTestGeneration("generate", 29)
 	blocked["model"] = "nai-diffusion-4-5-curated"
 	count := len(f.snapshot())
@@ -403,7 +411,7 @@ func TestRelayHighStepsFallbackRouting(t *testing.T) {
 
 func TestRelayHighStepsFallbackAccountingAndFailures(t *testing.T) {
 	f := newFallbackTestProxy(t, 3)
-	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
+	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000, "allow_fallback_high_steps": true})
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
 	body := fallbackTestGeneration("generate", 29)
 	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", key, body), http.StatusOK)
@@ -411,7 +419,7 @@ func TestRelayHighStepsFallbackAccountingAndFailures(t *testing.T) {
 	if stored.FixedSpent != 16 || stored.FixedPending != 0 || stored.FormulaAnlas != 9 || stored.SuccessfulGenerations != 1 || stored.OpusUsed != 0 {
 		t.Fatalf("high steps must use official paid accounting on the original key: %+v", f.h.viewAdminKey(stored))
 	}
-	limited, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 9})
+	limited, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 9, "allow_fallback_high_steps": true})
 	count := len(f.snapshot())
 	f.send(t, managedRequest(t, "POST", f.url+"/ai/generate-image", limited, body), http.StatusPaymentRequired)
 	if len(f.snapshot()) != count {
@@ -446,60 +454,64 @@ func TestRelayHighStepsFallbackAccountingAndFailures(t *testing.T) {
 
 func TestRelayHighStepsMultipartAndDurableJobs(t *testing.T) {
 	f := newFallbackTestProxy(t, 2)
-	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
-	for _, enabled := range []bool{false, true} {
-		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
-		for _, action := range []string{"generate", "img2img"} {
-			count := len(f.snapshot())
-			payload, _ := json.Marshal(fallbackTestGeneration(action, 29))
-			body, contentType := managedMultipartBody(t,
-				multipartPart{name: "request", contentType: "application/json", data: payload},
-				multipartPart{name: "input", contentType: "image/png", data: []byte{0, 128, 255}},
-			)
-			req, _ := http.NewRequest("POST", f.url+"/image/ai/generate-image-stream", bytes.NewReader(body))
-			req.Header.Set("Authorization", "Bearer "+key)
-			req.Header.Set("Content-Type", contentType)
-			code, provider := http.StatusOK, providerNewAPI
-			if enabled {
-				provider = providerNovelAI
-			} else if action != "generate" {
-				code = http.StatusServiceUnavailable
-			}
-			f.send(t, req, code)
-			if code == http.StatusOK {
-				calls := f.snapshot()
-				got := calls[len(calls)-1]
-				if len(calls) != count+1 || got.provider != provider || got.path != "/ai/generate-image-stream" || !bytes.Equal(got.body, body) || got.contentType != contentType {
-					t.Fatal("high-step multipart body or stream path changed")
+	key, keyID := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
+	for _, keyAllowed := range []bool{false, true} {
+		doManaged(t, managedRequest(t, "PUT", f.url+"/admin/keys/"+keyID, testAdminKey, map[string]any{"allow_fallback_high_steps": keyAllowed}), http.StatusOK)
+		for _, enabled := range []bool{false, true} {
+			allowed := enabled && keyAllowed
+			doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": enabled}), http.StatusOK)
+			for _, action := range []string{"generate", "img2img"} {
+				count := len(f.snapshot())
+				payload, _ := json.Marshal(fallbackTestGeneration(action, 29))
+				body, contentType := managedMultipartBody(t,
+					multipartPart{name: "request", contentType: "application/json", data: payload},
+					multipartPart{name: "input", contentType: "image/png", data: []byte{0, 128, 255}},
+				)
+				req, _ := http.NewRequest("POST", f.url+"/image/ai/generate-image-stream", bytes.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+key)
+				req.Header.Set("Content-Type", contentType)
+				code, provider := http.StatusOK, providerNewAPI
+				if allowed {
+					provider = providerNovelAI
+				} else if action != "generate" {
+					code = http.StatusServiceUnavailable
 				}
-			} else if len(f.snapshot()) != count {
-				t.Fatal("multipart bypassed fallback permission")
-			}
-			count = len(f.snapshot())
-			before, _ := f.h.store.find(key)
-			job := doManaged(t, managedRequest(t, "POST", f.url+"/jobs/ai/generate-image", key, fallbackTestGeneration(action, 29)), http.StatusAccepted)
-			deadline := time.Now().Add(2 * time.Second)
-			var status map[string]any
-			for {
-				status = doManaged(t, managedRequest(t, "GET", f.url+"/jobs/"+job["id"].(string), key, nil), http.StatusOK)
-				if status["state"] == "done" || time.Now().After(deadline) {
-					break
+				f.send(t, req, code)
+				if code == http.StatusOK {
+					calls := f.snapshot()
+					got := calls[len(calls)-1]
+					if len(calls) != count+1 || got.provider != provider || got.path != "/ai/generate-image-stream" || !bytes.Equal(got.body, body) || got.contentType != contentType {
+						t.Fatal("high-step multipart body or stream path changed")
+					}
+				} else if len(f.snapshot()) != count {
+					t.Fatal("multipart bypassed fallback permission")
 				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			if status["state"] != "done" || status["upstream_status"] != float64(code) {
-				t.Fatalf("durable job did not apply account high-step policy: %v", status)
-			}
-			if code == http.StatusOK {
-				calls := f.snapshot()
-				got := calls[len(calls)-1]
-				if len(calls) != count+1 || got.provider != provider || got.path != "/ai/generate-image" || !bytes.Equal(got.body, payload) {
-					t.Fatal("durable job changed high-step routing or body")
+				count = len(f.snapshot())
+				before, _ := f.h.store.find(key)
+				job := doManaged(t, managedRequest(t, "POST", f.url+"/jobs/ai/generate-image", key, fallbackTestGeneration(action, 29)), http.StatusAccepted)
+				deadline := time.Now().Add(2 * time.Second)
+				var status map[string]any
+				for {
+					status = doManaged(t, managedRequest(t, "GET", f.url+"/jobs/"+job["id"].(string), key, nil), http.StatusOK)
+					if status["state"] == "done" || time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
 				}
-			} else {
-				after, _ := f.h.store.find(key)
-				if len(f.snapshot()) != count || after.FixedSpent != before.FixedSpent || after.SuccessfulGenerations != before.SuccessfulGenerations {
-					t.Fatal("blocked durable job changed accounting")
+				if status["state"] != "done" || status["upstream_status"] != float64(code) {
+					t.Fatalf("durable job did not apply account high-step policy: %v", status)
+				}
+				if code == http.StatusOK {
+					calls := f.snapshot()
+					got := calls[len(calls)-1]
+					if len(calls) != count+1 || got.provider != provider || got.path != "/ai/generate-image" || !bytes.Equal(got.body, payload) {
+						t.Fatal("durable job changed high-step routing or body")
+					}
+				} else {
+					after, _ := f.h.store.find(key)
+					if len(f.snapshot()) != count || after.FixedSpent != before.FixedSpent || after.SuccessfulGenerations != before.SuccessfulGenerations {
+						t.Fatal("blocked durable job changed accounting")
+					}
 				}
 			}
 		}
@@ -508,7 +520,7 @@ func TestRelayHighStepsMultipartAndDurableJobs(t *testing.T) {
 
 func TestRelayHighStepsFallbackIsPerAccount(t *testing.T) {
 	f := newFallbackTestProxy(t, 3)
-	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000})
+	key, _ := f.key(t, map[string]any{"allow_fixed_anlas": true, "fixed_anlas_limit": 1000, "allow_fallback_high_steps": true})
 	var secondCalls atomic.Int32
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer second-relay-token-0123456789" {
@@ -531,7 +543,7 @@ func TestRelayHighStepsFallbackIsPerAccount(t *testing.T) {
 	secondID := account["id"].(string)
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+secondID, testAdminKey, map[string]any{"fallback_high_steps": false}), http.StatusOK)
 	secondKey := doManaged(t, managedRequest(t, "POST", f.url+"/admin/keys", testAdminKey, map[string]any{
-		"name": "second device", "account_id": secondID, "allow_fixed_anlas": true, "fixed_anlas_limit": 1000,
+		"name": "second device", "account_id": secondID, "allow_fixed_anlas": true, "fixed_anlas_limit": 1000, "allow_fallback_high_steps": true,
 	}), http.StatusCreated)["key"].(string)
 	officialKey := doManaged(t, managedRequest(t, "POST", f.url+"/admin/keys", testAdminKey, map[string]any{
 		"name": "official device", "account_id": defaultAccountID, "allow_fixed_anlas": true, "fixed_anlas_limit": 1000,
@@ -561,7 +573,7 @@ func TestRelayHighStepsFallbackIsPerAccount(t *testing.T) {
 	// The same official target appears once when both directly pooled and a fallback.
 	doManaged(t, managedRequest(t, "PUT", f.url+"/admin/accounts/"+f.relayID, testAdminKey, map[string]any{"fallback_high_steps": true}), http.StatusOK)
 	cost := jobCost{Model: "nai-diffusion-5-full", Steps: 29}
-	candidates := f.h.accountCandidatesForJob(clientKey{AccountID: poolAccountID}, "/ai/generate-image", cost)
+	candidates := f.h.accountCandidatesForJob(clientKey{AccountID: poolAccountID, AllowFallbackHighSteps: true}, "/ai/generate-image", cost)
 	if len(candidates) != 2 || candidates[0].ID == candidates[1].ID {
 		t.Fatal("pool duplicated the official high-step fallback")
 	}

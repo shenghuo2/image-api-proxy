@@ -8,20 +8,21 @@ import (
 const opusFullImages = 1730
 
 type keyPolicyInput struct {
-	Name             string   `json:"name"`
-	AccountID        *string  `json:"account_id"`
-	Allocation       *int64   `json:"allocation_anlas"`
-	AllowFixed       *bool    `json:"allow_fixed_anlas"`
-	FixedLimit       *int64   `json:"fixed_anlas_limit"`
-	AllowPurchased   *bool    `json:"allow_purchased_anlas"`
-	PurchasedLimit   *int64   `json:"purchased_anlas_limit"`
-	AllowOpus        *bool    `json:"allow_opus"`
-	AllowMultiImage  *bool    `json:"allow_multi_image"`
-	ArchiveEnabled   *bool    `json:"archive_enabled"`
-	OpusLimit        *int64   `json:"opus_limit_images"`
-	OpusLimitMode    *string  `json:"opus_limit_mode"`
-	OpusLimitPercent *float64 `json:"opus_limit_percent"`
-	QueueLimit       *int     `json:"queue_limit"`
+	Name                   string   `json:"name"`
+	AccountID              *string  `json:"account_id"`
+	Allocation             *int64   `json:"allocation_anlas"`
+	AllowFixed             *bool    `json:"allow_fixed_anlas"`
+	FixedLimit             *int64   `json:"fixed_anlas_limit"`
+	AllowPurchased         *bool    `json:"allow_purchased_anlas"`
+	PurchasedLimit         *int64   `json:"purchased_anlas_limit"`
+	AllowOpus              *bool    `json:"allow_opus"`
+	AllowMultiImage        *bool    `json:"allow_multi_image"`
+	AllowFallbackHighSteps *bool    `json:"allow_fallback_high_steps"`
+	ArchiveEnabled         *bool    `json:"archive_enabled"`
+	OpusLimit              *int64   `json:"opus_limit_images"`
+	OpusLimitMode          *string  `json:"opus_limit_mode"`
+	OpusLimitPercent       *float64 `json:"opus_limit_percent"`
+	QueueLimit             *int     `json:"queue_limit"`
 }
 
 func applyPolicy(k *clientKey, input keyPolicyInput) error {
@@ -58,6 +59,9 @@ func applyPolicy(k *clientKey, input keyPolicyInput) error {
 	}
 	if input.AllowMultiImage != nil {
 		k.AllowMultiImage = *input.AllowMultiImage
+	}
+	if input.AllowFallbackHighSteps != nil {
+		k.AllowFallbackHighSteps = *input.AllowFallbackHighSteps
 	}
 	if input.ArchiveEnabled != nil {
 		k.ArchiveDisabled = !*input.ArchiveEnabled
