@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"mime"
 	"mime/multipart"
 	"strings"
 )
+
+// Keep the existing maximum area while allowing portrait and landscape dimensions.
+const maxGenerationPixels = 2048 * 2048
 
 type jobCost struct {
 	Full             int64
@@ -92,8 +96,21 @@ func estimateJob(path string, body []byte, contentType string) (jobCost, error) 
 	}
 	vibeCount := len(p.Vibes) + len(p.VibesCached)
 	referenceCount := len(p.References) + len(p.ReferencesCached)
-	if !allowedGenerationModel(payload.Model) || p.Width < 64 || p.Height < 64 || p.Width > 2048 || p.Height > 2048 || p.Steps < 1 || p.Steps > 50 || p.Samples < 1 || p.Samples > 4 || vibeCount > 16 || referenceCount > 10 {
-		return jobCost{}, errors.New("unsupported generation dimensions")
+	if !allowedGenerationModel(payload.Model) {
+		return jobCost{}, errors.New("unsupported generation model")
+	}
+	// Divide before multiplying so invalid large integers cannot overflow the estimate.
+	if p.Width < 64 || p.Height < 64 || p.Width > maxGenerationPixels/p.Height {
+		return jobCost{}, fmt.Errorf("generation dimensions must each be at least 64 and total pixels must not exceed %d (received %dx%d)", maxGenerationPixels, p.Width, p.Height)
+	}
+	if p.Steps < 1 || p.Steps > 50 {
+		return jobCost{}, errors.New("generation steps must be between 1 and 50")
+	}
+	if p.Samples < 1 || p.Samples > 4 {
+		return jobCost{}, errors.New("generation n_samples must be between 1 and 4")
+	}
+	if vibeCount > 16 || referenceCount > 10 {
+		return jobCost{}, errors.New("generation supports at most 16 Vibe and 10 Director references")
 	}
 	pixels := float64(p.Width * p.Height)
 	base := math.Ceil(2.951823174884865e-6*pixels + 5.753298233447344e-7*pixels*float64(p.Steps))

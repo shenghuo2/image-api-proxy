@@ -50,6 +50,9 @@ func newFallbackTestProxy(t *testing.T, tier int) *fallbackTestProxy {
 			f.calls = append(f.calls, fallbackTestCall{provider, r.URL.Path, r.Header.Get("Content-Type"), body})
 			f.mu.Unlock()
 			switch r.Header.Get("X-Correlation-Id") {
+			case "bad-request":
+				http.Error(w, "upstream rejected image dimensions", http.StatusBadRequest)
+				return
 			case "reject":
 				http.Error(w, "upstream refused", http.StatusPaymentRequired)
 				return

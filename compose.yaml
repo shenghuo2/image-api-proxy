@@ -1,6 +1,6 @@
 services:
   proxy:
-    image: ${PROXY_IMAGE:-shenghuo2/novelai-api-proxy:v0.1.4-relay-compat-2}
+    image: ${PROXY_IMAGE:-shenghuo2/novelai-api-proxy:v0.1.4-relay-compat-3}
     build: .
     restart: unless-stopped
     stop_grace_period: 8m

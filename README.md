@@ -33,7 +33,7 @@
 
 ### Docker / VPS（推荐）
 
-本分支镜像为 `shenghuo2/novelai-api-proxy:v0.1.4-relay-compat-2`，在主线 `v0.1.4` 基础上提供 New API 中转站兼容。
+本分支镜像为 `shenghuo2/novelai-api-proxy:v0.1.4-relay-compat-3`，在主线 `v0.1.4` 基础上提供 New API 中转站兼容。
 
 按 [Docker 部署教程](docs/USAGE.md) 安装并启动。教程包含 Docker Compose、单容器、持久化存储、HTTPS 反向代理及升级说明。
 

@@ -663,7 +663,7 @@ func (h *ManagedHandler) executeJob(w http.ResponseWriter, r *http.Request, key 
 	}
 	cost, err := estimateJob(selected.path, body, r.Header.Get("Content-Type"))
 	if err != nil {
-		http.Error(w, "unsupported request parameters", http.StatusBadRequest)
+		http.Error(w, "unsupported request parameters: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if cost.MultiImage && !h.settings.snapshot().AllowMultiImage {
