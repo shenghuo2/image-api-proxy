@@ -27,14 +27,14 @@ docker run -d --name novelai-api-proxy --restart unless-stopped \
   -e PROXY_STATE_PATH=/data/keys.json \
   -v novelai-proxy-data:/data \
   -p 127.0.0.1:8787:8787 \
-  shenghuo2/novelai-api-proxy:v0.1.4-relay-compat-3
+  shenghuo2/novelai-api-proxy:v0.1.5-relay-compat-2
 ```
 
 ## 访问与升级
 
-本分支的兼容中转站镜像使用 `vX.Y.Z-relay-compat` 标签，与对应主线版本保持一致；同一主线版本的后续兼容发布追加 `-2`、`-3` 等修订后缀，随特性分支独立发布。当前版本为 `v0.1.4-relay-compat-3`，包含主线修复、New API 备用官方账号分流、逐中转账号的高步数补充权限及付费长图尺寸修复。
+本分支的兼容中转站镜像使用 `vX.Y.Z-relay-compat` 标签，与对应主线版本保持一致；同一主线版本的后续兼容发布追加 `-2`、`-3` 等修订后缀，随特性分支独立发布。当前版本为 `v0.1.5-relay-compat-2`，同步主线 `v0.1.5` 的请求日志与生成尺寸修复，保留 New API 备用官方账号分流及逐中转账号的高步数补充权限。历史预发布已占用 `v0.1.5-relay-compat`，因此本次使用修订后缀。
 
-镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.4-relay-compat-3`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
+镜像在 Docker Hub 使用标签 `shenghuo2/novelai-api-proxy:v0.1.5-relay-compat-2`，支持 `linux/amd64` 和 `linux/arm64`。需要局域网访问时，将 `-p` 中的 `127.0.0.1` 换成主机局域网 IP，并相应修改 `PROXY_BIND_ADDR`；公网访问应通过 HTTPS 反向代理。
 
 升级时继续挂载同一个 `/data` 卷；Compose 部署执行 `docker compose up -d --build`。`docker run` 部署请将镜像标签改为新版并重新创建容器，保留原数据卷。
 
